@@ -1,0 +1,417 @@
+"""Telegram inbound bridge for Agent Zero.
+
+This extension starts a background polling loop that reads Telegram bot updates
+and forwards incoming chat messages to Agent Zero via `/api_message`.
+
+Required secrets/environment variables (typically in Agent Zero secrets):
+- TELEGRAM_TOKEN
+- AGENT_ZERO_API_KEY
+
+Recommended:
+- CHAT_ID (also used as default allowed inbound chat)
+- AGENT_ZERO_URL (default: http://localhost:8080)
+- TELEGRAM_DEBUG=true (verbose diagnostics)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+from pathlib import Path
+from typing import Any
+from urllib import error, request
+
+try:
+    from python.helpers.extension import Extension  # pyright: ignore[reportMissingImports]
+except Exception:  # pragma: no cover - local fallback outside Agent Zero runtime
+    class Extension:  # type: ignore[override]
+        def __init__(self, agent=None, **kwargs):
+            self.agent = agent
+
+
+def _http_json(url: str, payload: dict[str, Any] | None = None, timeout: int = 30) -> dict[str, Any]:
+    data = None
+    headers = {"Content-Type": "application/json"}
+
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+
+    req = request.Request(url=url, data=data, headers=headers, method="POST")
+
+    with request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def _safe_int(value: str, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _as_bool(value: str, default: bool = False) -> bool:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _mask(value: str, show_head: int = 4, show_tail: int = 3) -> str:
+    if not value:
+        return "<empty>"
+    if len(value) <= show_head + show_tail:
+        return "*" * len(value)
+    return f"{value[:show_head]}...{value[-show_tail:]}"
+
+
+class TelegramBridgeConfig:
+    def __init__(
+        self,
+        token: str,
+        api_url: str,
+        api_key: str,
+        allowed_chat_ids: set[str],
+        poll_interval_sec: int,
+        long_poll_timeout_sec: int,
+        lifetime_hours: int,
+        default_project: str | None,
+        skip_old_updates_on_start: bool,
+        offset_file: str,
+        contexts_file: str,
+        debug: bool,
+    ):
+        self.token = token
+        self.api_url = api_url
+        self.api_key = api_key
+        self.allowed_chat_ids = allowed_chat_ids
+        self.poll_interval_sec = poll_interval_sec
+        self.long_poll_timeout_sec = long_poll_timeout_sec
+        self.lifetime_hours = lifetime_hours
+        self.default_project = default_project
+        self.skip_old_updates_on_start = skip_old_updates_on_start
+        self.offset_file = offset_file
+        self.contexts_file = contexts_file
+        self.debug = debug
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token and self.api_key)
+
+    @staticmethod
+    def from_env() -> "TelegramBridgeConfig":
+        token = os.getenv("TELEGRAM_TOKEN", "").strip()
+        api_url = os.getenv("AGENT_ZERO_URL", "http://localhost:8080").rstrip("/")
+        api_key = os.getenv("AGENT_ZERO_API_KEY", "").strip()
+        debug = _as_bool(os.getenv("TELEGRAM_DEBUG", "false"), False)
+
+        chat_id = os.getenv("CHAT_ID", "").strip()
+        raw_allowed = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").strip()
+        allowed = {x.strip() for x in raw_allowed.split(",") if x.strip()}
+        if chat_id and not allowed:
+            allowed = {chat_id}
+
+        return TelegramBridgeConfig(
+            token=token,
+            api_url=api_url,
+            api_key=api_key,
+            allowed_chat_ids=allowed,
+            poll_interval_sec=_safe_int(os.getenv("TELEGRAM_POLL_INTERVAL_SEC", "2"), 2),
+            long_poll_timeout_sec=_safe_int(os.getenv("TELEGRAM_LONG_POLL_TIMEOUT_SEC", "20"), 20),
+            lifetime_hours=_safe_int(os.getenv("TELEGRAM_CONTEXT_LIFETIME_HOURS", "24"), 24),
+            default_project=os.getenv("TELEGRAM_DEFAULT_PROJECT", "").strip() or None,
+            skip_old_updates_on_start=os.getenv("TELEGRAM_SKIP_OLD_UPDATES", "true").lower() in {"1", "true", "yes", "on"},
+            offset_file=os.getenv("TELEGRAM_OFFSET_FILE", "/a0/tmp/telegram_offset.txt"),
+            contexts_file=os.getenv("TELEGRAM_CONTEXTS_FILE", "/a0/tmp/telegram_contexts.json"),
+            debug=debug,
+        )
+
+
+class TelegramInboundWorker:
+    def __init__(self, config: TelegramBridgeConfig):
+        self.cfg = config
+        self._running = True
+        self._lock = threading.Lock()
+        self._contexts: dict[str, str] = self._load_contexts()
+
+    def _debug(self, message: str) -> None:
+        if self.cfg.debug:
+            print(f"[telegram-bridge][debug] {message}")
+
+    def stop(self) -> None:
+        self._running = False
+
+    def run(self) -> None:
+        if not self.cfg.enabled:
+            print("[telegram-bridge] Disabled: missing TELEGRAM_TOKEN or AGENT_ZERO_API_KEY")
+            self._debug(
+                "startup env status -> "
+                f"TELEGRAM_TOKEN={'set' if bool(self.cfg.token) else 'missing'} "
+                f"AGENT_ZERO_API_KEY={'set' if bool(self.cfg.api_key) else 'missing'} "
+                f"AGENT_ZERO_URL={self.cfg.api_url}"
+            )
+            return
+
+        offset = self._load_offset()
+
+        if self.cfg.skip_old_updates_on_start and offset is None:
+            offset = self._bootstrap_offset()
+            self._save_offset(offset)
+
+        print("[telegram-bridge] Inbound worker started")
+        self._debug(
+            "config -> "
+            f"api_url={self.cfg.api_url} "
+            f"allowed_chat_ids={sorted(list(self.cfg.allowed_chat_ids)) if self.cfg.allowed_chat_ids else 'ALL'} "
+            f"poll_interval={self.cfg.poll_interval_sec}s "
+            f"long_poll_timeout={self.cfg.long_poll_timeout_sec}s "
+            f"lifetime_hours={self.cfg.lifetime_hours} "
+            f"default_project={self.cfg.default_project or '<none>'} "
+            f"offset_file={self.cfg.offset_file} "
+            f"contexts_file={self.cfg.contexts_file}"
+        )
+
+        while self._running:
+            try:
+                updates = self._get_updates(offset)
+                self._debug(f"getUpdates returned {len(updates)} updates (offset={offset})")
+                for upd in updates:
+                    upd_id = int(upd.get("update_id", 0))
+                    if upd_id:
+                        offset = upd_id + 1
+                        self._save_offset(offset)
+                    self._handle_update(upd)
+
+            except Exception as exc:
+                print(f"[telegram-bridge] polling error: {exc}")
+                time.sleep(max(1, self.cfg.poll_interval_sec))
+
+    def _telegram_api(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        url = f"https://api.telegram.org/bot{self.cfg.token}/{method}"
+        data = _http_json(url, payload=payload, timeout=self.cfg.long_poll_timeout_sec + 5)
+        if not data.get("ok", False):
+            raise RuntimeError(f"Telegram API error on {method}: {data}")
+        return data
+
+    def _get_updates(self, offset: int | None) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "timeout": self.cfg.long_poll_timeout_sec,
+            "allowed_updates": ["message"],
+        }
+        if offset is not None:
+            payload["offset"] = offset
+
+        data = self._telegram_api("getUpdates", payload)
+        result = data.get("result", [])
+        return result if isinstance(result, list) else []
+
+    def _bootstrap_offset(self) -> int:
+        data = self._telegram_api("getUpdates", {"timeout": 0, "allowed_updates": ["message"]})
+        result = data.get("result", [])
+        if not isinstance(result, list) or not result:
+            return 0
+
+        max_id = max(int(x.get("update_id", 0)) for x in result)
+        return max_id + 1
+
+    def _handle_update(self, upd: dict[str, Any]) -> None:
+        msg = upd.get("message")
+        if not isinstance(msg, dict):
+            return
+
+        text = (msg.get("text") or "").strip()
+        if not text:
+            self._debug("received non-text or empty message, skipping")
+            return
+
+        chat = msg.get("chat") or {}
+        chat_id = str(chat.get("id", "")).strip()
+        if not chat_id:
+            self._debug("message without chat_id, skipping")
+            return
+
+        if self.cfg.allowed_chat_ids and chat_id not in self.cfg.allowed_chat_ids:
+            self._debug(f"chat_id={chat_id} not in allowed list, skipping")
+            return
+
+        sender = msg.get("from") or {}
+        if bool(sender.get("is_bot")):
+            self._debug("message from bot user, skipping")
+            return
+
+        self._debug(f"inbound message chat_id={chat_id} text={text[:120]!r}")
+
+        if text in {"/start", "/help"}:
+            self._send_telegram(chat_id, "✅ Bridge Telegram ↔ Agent0 attivo. Scrivimi un messaggio e lo inoltro ad Agent0.")
+            return
+
+        if text.startswith("/reset"):
+            self._contexts.pop(chat_id, None)
+            self._save_contexts()
+            self._send_telegram(chat_id, "♻️ Contesto conversazione resettato.")
+            return
+
+        self._forward_to_agent(chat_id, text)
+
+    def _forward_to_agent(self, chat_id: str, text: str) -> None:
+        context_id = self._contexts.get(chat_id)
+
+        payload: dict[str, Any] = {
+            "message": text,
+            "lifetime_hours": self.cfg.lifetime_hours,
+        }
+
+        if context_id:
+            payload["context_id"] = context_id
+        elif self.cfg.default_project:
+            payload["project"] = self.cfg.default_project
+
+        self._debug(
+            "forwarding to Agent0 -> "
+            f"url={self.cfg.api_url}/api_message "
+            f"chat_id={chat_id} "
+            f"has_context_id={bool(context_id)} "
+            f"has_project={bool(payload.get('project'))} "
+            f"text_len={len(text)}"
+        )
+
+        url = f"{self.cfg.api_url}/api_message"
+        data = None
+
+        try:
+            req = request.Request(
+                url=url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-KEY": self.cfg.api_key,
+                },
+                method="POST",
+            )
+
+            with request.urlopen(req, timeout=180) as resp:
+                raw = resp.read().decode("utf-8")
+                data = json.loads(raw) if raw else {}
+
+            self._debug(
+                f"Agent0 response status=ok context_id={data.get('context_id') if isinstance(data, dict) else None} "
+                f"has_response={bool(isinstance(data, dict) and data.get('response'))}"
+            )
+
+            new_context_id = data.get("context_id") if isinstance(data, dict) else None
+            if isinstance(new_context_id, str) and new_context_id.strip():
+                self._contexts[chat_id] = new_context_id.strip()
+                self._save_contexts()
+
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="ignore")
+            self._debug(f"Agent0 HTTPError code={exc.code} body={body[:500]!r}")
+            self._send_telegram(chat_id, f"❌ Errore Agent0 HTTP {exc.code}: {body[:1200]}")
+        except Exception as exc:
+            self._debug(f"Agent0 generic error: {exc}")
+            self._send_telegram(chat_id, f"❌ Errore inoltro verso Agent0: {exc}")
+
+    def _send_telegram(self, chat_id: str, text: str) -> None:
+        payload = {
+            "chat_id": chat_id,
+            "text": text[:4000],
+            "disable_web_page_preview": True,
+        }
+        try:
+            self._telegram_api("sendMessage", payload)
+            self._debug(f"sendMessage ok chat_id={chat_id} text_len={len(payload['text'])}")
+        except Exception as exc:
+            print(f"[telegram-bridge] sendMessage error: {exc}")
+
+    def _load_offset(self) -> int | None:
+        path = Path(self.cfg.offset_file)
+        try:
+            if not path.exists():
+                return None
+            value = path.read_text(encoding="utf-8").strip()
+            if not value:
+                return None
+            return int(value)
+        except Exception:
+            return None
+
+    def _save_offset(self, offset: int) -> None:
+        path = Path(self.cfg.offset_file)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(str(offset), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_contexts(self) -> dict[str, str]:
+        path = Path(self.cfg.contexts_file)
+        try:
+            if not path.exists():
+                return {}
+            raw = path.read_text(encoding="utf-8")
+            data = json.loads(raw) if raw else {}
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items()}
+        except Exception:
+            pass
+        return {}
+
+    def _save_contexts(self) -> None:
+        path = Path(self.cfg.contexts_file)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                path.write_text(json.dumps(self._contexts), encoding="utf-8")
+        except Exception:
+            pass
+
+
+class TelegramBridgeExtension(Extension):
+    _started = False
+    _start_lock = threading.Lock()
+
+    async def execute(self, **kwargs) -> Any:
+        # Start only once, on top-level agent.
+        if getattr(self.agent, "number", 0) != 0:
+            return None
+
+        with TelegramBridgeExtension._start_lock:
+            if TelegramBridgeExtension._started:
+                return None
+
+            cfg = TelegramBridgeConfig.from_env()
+            if not cfg.enabled:
+                print("[telegram-bridge] Skipping startup: missing TELEGRAM_TOKEN or AGENT_ZERO_API_KEY")
+                if cfg.debug:
+                    print(
+                        "[telegram-bridge][debug] startup env -> "
+                        f"TELEGRAM_TOKEN={_mask(cfg.token)} "
+                        f"AGENT_ZERO_API_KEY={_mask(cfg.api_key)} "
+                        f"AGENT_ZERO_URL={cfg.api_url}"
+                    )
+                TelegramBridgeExtension._started = True
+                return None
+
+            if cfg.debug:
+                print(
+                    "[telegram-bridge][debug] startup env -> "
+                    f"TELEGRAM_TOKEN={_mask(cfg.token)} "
+                    f"AGENT_ZERO_API_KEY={_mask(cfg.api_key)} "
+                    f"AGENT_ZERO_URL={cfg.api_url}"
+                )
+
+            worker = TelegramInboundWorker(cfg)
+            thread = threading.Thread(
+                target=worker.run,
+                daemon=True,
+                name="telegram-inbound-bridge",
+            )
+            thread.start()
+
+            self.agent.set_data("_telegram_inbound_worker", worker)
+            TelegramBridgeExtension._started = True
+            print("[telegram-bridge] Extension initialized")
+
+        return None
