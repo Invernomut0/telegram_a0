@@ -31,6 +31,17 @@ Nel tuo Agent Zero (Settings → Secrets) imposta almeno:
 - `CHAT_ID`
 - `AGENT_ZERO_API_KEY`
 
+L'estensione prova prima `os.environ`, poi fallback su file secrets Agent0:
+
+- default: `/a0/usr/secrets.env`
+- override: `AGENT_ZERO_SECRETS_FILE=/custom/path/secrets.env`
+
+Alias supportati:
+
+- `TELEGRAM_TOKEN` oppure `TELEGRAM_BOT_TOKEN`
+- `AGENT_ZERO_API_KEY` oppure `API_KEY` oppure `A0_API_KEY`
+- `CHAT_ID` oppure `TELEGRAM_CHAT_ID`
+
 Opzionali:
 
 - `AGENT_ZERO_URL` (default `http://localhost:8080`)

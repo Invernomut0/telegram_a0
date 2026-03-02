@@ -19,6 +19,7 @@ import json
 import os
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 from urllib import error, request
@@ -67,6 +68,44 @@ def _mask(value: str, show_head: int = 4, show_tail: int = 3) -> str:
     return f"{value[:show_head]}...{value[-show_tail:]}"
 
 
+def _parse_env_file(path: str) -> dict[str, str]:
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        return {}
+
+    values: dict[str, str] = {}
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            key, val = raw.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key:
+                values[key] = val
+    except Exception:
+        return {}
+
+    return values
+
+
+def _resolve_secret(
+    env_data: dict[str, str],
+    secrets_data: dict[str, str],
+    keys: Iterable[str],
+) -> str:
+    for key in keys:
+        val = env_data.get(key, "").strip()
+        if val:
+            return val
+    for key in keys:
+        val = secrets_data.get(key, "").strip()
+        if val:
+            return val
+    return ""
+
+
 class TelegramBridgeConfig:
     def __init__(
         self,
@@ -82,6 +121,7 @@ class TelegramBridgeConfig:
         offset_file: str,
         contexts_file: str,
         debug: bool,
+        secrets_file: str,
     ):
         self.token = token
         self.api_url = api_url
@@ -95,6 +135,7 @@ class TelegramBridgeConfig:
         self.offset_file = offset_file
         self.contexts_file = contexts_file
         self.debug = debug
+        self.secrets_file = secrets_file
 
     @property
     def enabled(self) -> bool:
@@ -102,13 +143,29 @@ class TelegramBridgeConfig:
 
     @staticmethod
     def from_env() -> "TelegramBridgeConfig":
-        token = os.getenv("TELEGRAM_TOKEN", "").strip()
-        api_url = os.getenv("AGENT_ZERO_URL", "http://localhost:8080").rstrip("/")
-        api_key = os.getenv("AGENT_ZERO_API_KEY", "").strip()
+        env_data = dict(os.environ)
+        secrets_file = env_data.get("AGENT_ZERO_SECRETS_FILE", "/a0/usr/secrets.env").strip() or "/a0/usr/secrets.env"
+        secrets_data = _parse_env_file(secrets_file)
+
+        token = _resolve_secret(
+            env_data,
+            secrets_data,
+            keys=("TELEGRAM_TOKEN", "TELEGRAM_BOT_TOKEN"),
+        )
+        api_url = _resolve_secret(
+            env_data,
+            secrets_data,
+            keys=("AGENT_ZERO_URL", "A0_URL"),
+        ).rstrip("/") or "http://localhost:8080"
+        api_key = _resolve_secret(
+            env_data,
+            secrets_data,
+            keys=("AGENT_ZERO_API_KEY", "API_KEY", "A0_API_KEY"),
+        )
         debug = _as_bool(os.getenv("TELEGRAM_DEBUG", "false"), False)
 
-        chat_id = os.getenv("CHAT_ID", "").strip()
-        raw_allowed = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").strip()
+        chat_id = _resolve_secret(env_data, secrets_data, keys=("CHAT_ID", "TELEGRAM_CHAT_ID"))
+        raw_allowed = _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_ALLOWED_CHAT_IDS",))
         allowed = {x.strip() for x in raw_allowed.split(",") if x.strip()}
         if chat_id and not allowed:
             allowed = {chat_id}
@@ -118,14 +175,15 @@ class TelegramBridgeConfig:
             api_url=api_url,
             api_key=api_key,
             allowed_chat_ids=allowed,
-            poll_interval_sec=_safe_int(os.getenv("TELEGRAM_POLL_INTERVAL_SEC", "2"), 2),
-            long_poll_timeout_sec=_safe_int(os.getenv("TELEGRAM_LONG_POLL_TIMEOUT_SEC", "20"), 20),
-            lifetime_hours=_safe_int(os.getenv("TELEGRAM_CONTEXT_LIFETIME_HOURS", "24"), 24),
-            default_project=os.getenv("TELEGRAM_DEFAULT_PROJECT", "").strip() or None,
-            skip_old_updates_on_start=os.getenv("TELEGRAM_SKIP_OLD_UPDATES", "true").lower() in {"1", "true", "yes", "on"},
-            offset_file=os.getenv("TELEGRAM_OFFSET_FILE", "/a0/tmp/telegram_offset.txt"),
-            contexts_file=os.getenv("TELEGRAM_CONTEXTS_FILE", "/a0/tmp/telegram_contexts.json"),
+            poll_interval_sec=_safe_int(_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_POLL_INTERVAL_SEC",)) or "2", 2),
+            long_poll_timeout_sec=_safe_int(_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_LONG_POLL_TIMEOUT_SEC",)) or "20", 20),
+            lifetime_hours=_safe_int(_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_CONTEXT_LIFETIME_HOURS",)) or "24", 24),
+            default_project=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_DEFAULT_PROJECT",)) or None,
+            skip_old_updates_on_start=_as_bool(_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_SKIP_OLD_UPDATES",)) or "true", True),
+            offset_file=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_OFFSET_FILE",)) or "/a0/tmp/telegram_offset.txt",
+            contexts_file=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_CONTEXTS_FILE",)) or "/a0/tmp/telegram_contexts.json",
             debug=debug,
+            secrets_file=secrets_file,
         )
 
 
@@ -164,6 +222,7 @@ class TelegramInboundWorker:
         self._debug(
             "config -> "
             f"api_url={self.cfg.api_url} "
+            f"secrets_file={self.cfg.secrets_file} "
             f"allowed_chat_ids={sorted(list(self.cfg.allowed_chat_ids)) if self.cfg.allowed_chat_ids else 'ALL'} "
             f"poll_interval={self.cfg.poll_interval_sec}s "
             f"long_poll_timeout={self.cfg.long_poll_timeout_sec}s "
@@ -389,7 +448,8 @@ class TelegramBridgeExtension(Extension):
                         "[telegram-bridge][debug] startup env -> "
                         f"TELEGRAM_TOKEN={_mask(cfg.token)} "
                         f"AGENT_ZERO_API_KEY={_mask(cfg.api_key)} "
-                        f"AGENT_ZERO_URL={cfg.api_url}"
+                        f"AGENT_ZERO_URL={cfg.api_url} "
+                        f"SECRETS_FILE={cfg.secrets_file}"
                     )
                 TelegramBridgeExtension._started = True
                 return None
@@ -399,7 +459,8 @@ class TelegramBridgeExtension(Extension):
                     "[telegram-bridge][debug] startup env -> "
                     f"TELEGRAM_TOKEN={_mask(cfg.token)} "
                     f"AGENT_ZERO_API_KEY={_mask(cfg.api_key)} "
-                    f"AGENT_ZERO_URL={cfg.api_url}"
+                    f"AGENT_ZERO_URL={cfg.api_url} "
+                    f"SECRETS_FILE={cfg.secrets_file}"
                 )
 
             worker = TelegramInboundWorker(cfg)
