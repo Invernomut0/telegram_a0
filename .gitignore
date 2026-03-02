@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+
+# VSCode
+.vscode/
+
+# Secrets & env
+.env
+.env.*
+secrets.env
+*.secrets
+
+# Bash
+*.swp
+*.swo
+
+# System
+.DS_Store
+Thumbs.db
+
+# Log
+*.log
+
+# Backup
+*~
+
+# Test output
+htmlcov/
+.coverage
+.cache/
+
+# Agent Zero runtime
+/a0/

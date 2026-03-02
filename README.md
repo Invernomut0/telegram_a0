@@ -66,6 +66,27 @@ Copia i file in una root Agent Zero mantenendo i path, ad esempio:
 
 Poi riavvia Agent Zero/container.
 
+## Installazione startup-safe con persistenza in `/a0/usr`
+
+Se la tua installazione persiste solo `/a0/usr`, usa questo pattern:
+
+1. Mantieni il repository addon in area persistente, ad esempio `/a0/usr/telegram_a0`.
+2. Salva i secrets in `/a0/usr/secrets.env` (oppure nel sistema Secrets di Agent Zero).
+3. Esegui ad ogni avvio container:
+  - `/a0/usr/telegram_a0/install_agent0_telegram_ext.sh /a0`
+
+Lo script è **idempotente** e quindi sicuro al bootstrap:
+
+- evita overwrite inutili (copia solo se i file cambiano)
+- supporta lock anti-concorrenza (se `flock` è disponibile)
+- non fallisce per file opzionali mancanti (`README.md`, `TODO.md`, `.env`)
+
+Variabili utili per bootstrap avanzato:
+
+- `AGENT0_ROOT` (default `/a0`)
+- `SOURCE_DIR` (default directory dello script)
+- `A0_TELEGRAM_INSTALL_LOCK_FILE` (default `/tmp/agent0_telegram_ext_install.lock`)
+
 ## Flusso operativo
 
 1. L’estensione `agent_init` avvia il loop Telegram long polling.
