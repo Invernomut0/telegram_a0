@@ -100,6 +100,17 @@ Variabili utili per bootstrap avanzato:
 - `A0_TELEGRAM_GIT_REMOTE` (default `origin`)
 - `A0_TELEGRAM_GIT_BRANCH` (default branch tracciato localmente)
 - `A0_TELEGRAM_GIT_AUTO_REPAIR_LOCAL_CHANGES` (default `true`, per disabilitare auto `reset/clean`)
+- `A0_TELEGRAM_GIT_AUTO_RESTORE_TRACKED_FILES` (default `true`, restores changed tracked files before/after pull)
+- `A0_TELEGRAM_GIT_RESTORE_FILES` (default `install_agent0_telegram_ext.sh`, space-separated tracked files)
+
+Important bootstrap note:
+
+- Agent Zero's extension bootstrap performs `git pull` **before** running this installer.
+- If the repo is already dirty at bootstrap time, one manual cleanup may still be required once:
+  - `git -C /a0/usr/extensions/repos/telegram_a0 reset --hard`
+  - `git -C /a0/usr/extensions/repos/telegram_a0 clean -fd`
+  - `git -C /a0/usr/extensions/repos/telegram_a0 pull --ff-only origin main`
+- After that, this installer's auto-restore + auto-repair logic helps keep the repo clean across restarts.
 
 ## Flusso operativo
 

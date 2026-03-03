@@ -15,6 +15,7 @@
 
 ## Done
 
+- [x] **Owner:** Copilot — **Task:** Added installer self-heal to auto-restore tracked files (default: `install_agent0_telegram_ext.sh`) before/after pull + documented bootstrap pull ordering limitation — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Inserita auto-fix in installer per conflitti `git pull` (auto-repair `reset --hard` + `clean -fd` + retry) — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Documentato troubleshooting per errore bootstrap `git pull failed ... local changes would be overwritten` con recovery commands — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Installer aggiornato: `git pull --ff-only` automatico ad ogni avvio prima della copia file (con fallback safe) — **Date:** 2026-03-03

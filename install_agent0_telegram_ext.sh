@@ -32,6 +32,8 @@ AUTO_UPDATE_REPO="${A0_TELEGRAM_AUTO_UPDATE_REPO:-true}"
 AUTO_UPDATE_REMOTE="${A0_TELEGRAM_GIT_REMOTE:-origin}"
 AUTO_UPDATE_BRANCH="${A0_TELEGRAM_GIT_BRANCH:-}"
 AUTO_REPAIR_LOCAL_CHANGES="${A0_TELEGRAM_GIT_AUTO_REPAIR_LOCAL_CHANGES:-true}"
+AUTO_RESTORE_TRACKED_FILES="${A0_TELEGRAM_GIT_AUTO_RESTORE_TRACKED_FILES:-true}"
+RESTORE_FILE_LIST="${A0_TELEGRAM_GIT_RESTORE_FILES:-install_agent0_telegram_ext.sh}"
 
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$LOCK_FILE"
@@ -47,6 +49,31 @@ fi
 
 update_repo_if_possible() {
   local repo_dir="$1"
+
+  _restore_tracked_files() {
+    local _repo="$1"
+
+    case "${AUTO_RESTORE_TRACKED_FILES,,}" in
+      0|false|no|off)
+        return 0
+        ;;
+    esac
+
+    local file
+    for file in $RESTORE_FILE_LIST; do
+      if [[ -z "$file" ]]; then
+        continue
+      fi
+      if git -C "$_repo" ls-files --error-unmatch "$file" >/dev/null 2>&1; then
+        if ! git -C "$_repo" diff --quiet -- "$file"; then
+          warn "Detected local changes in '$file' -> auto restoring to HEAD."
+          if ! git -C "$_repo" checkout -- "$file"; then
+            warn "Failed to auto-restore '$file'."
+          fi
+        fi
+      fi
+    done
+  }
 
   _git_pull() {
     local _repo="$1"
@@ -78,35 +105,39 @@ update_repo_if_possible() {
     return 0
   fi
 
-  log "Aggiorno repository locale da GitHub (remote=$AUTO_UPDATE_REMOTE)..."
+  _restore_tracked_files "$repo_dir"
+
+  log "Updating local repository from remote (remote=$AUTO_UPDATE_REMOTE)..."
   if _git_pull "$repo_dir"; then
-    log "Repository aggiornato con successo."
+    _restore_tracked_files "$repo_dir"
+    log "Repository updated successfully."
     return 0
   fi
 
   case "${AUTO_REPAIR_LOCAL_CHANGES,,}" in
     0|false|no|off)
-      warn "git pull fallito e auto-repair disabilitato: continuo con file locali già presenti."
+      warn "git pull failed and auto-repair is disabled: continuing with local files."
       return 0
       ;;
   esac
 
-  warn "git pull fallito: provo auto-repair (reset --hard + clean -fd) e retry pull."
+  warn "git pull failed: trying auto-repair (reset --hard + clean -fd) and retry."
   if ! git -C "$repo_dir" reset --hard; then
-    warn "auto-repair fallito su reset --hard, continuo con file locali già presenti."
+    warn "auto-repair failed on reset --hard, continuing with local files."
     return 0
   fi
   if ! git -C "$repo_dir" clean -fd; then
-    warn "auto-repair fallito su clean -fd, continuo con file locali già presenti."
+    warn "auto-repair failed on clean -fd, continuing with local files."
     return 0
   fi
 
   if ! _git_pull "$repo_dir"; then
-    warn "retry git pull fallito dopo auto-repair, continuo con file locali già presenti."
+    warn "retry git pull failed after auto-repair, continuing with local files."
     return 0
   fi
 
-  log "Repository aggiornato con successo."
+  _restore_tracked_files "$repo_dir"
+  log "Repository updated successfully."
 }
 
 update_repo_if_possible "$SRC_DIR"
