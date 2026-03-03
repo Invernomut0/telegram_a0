@@ -85,6 +85,7 @@ Se la tua installazione persiste solo `/a0/usr`, usa questo pattern:
 Lo script è **idempotente** e quindi sicuro al bootstrap:
 
 - prova ad aggiornare il repository locale con `git pull --ff-only` prima della copia file;
+- se il pull fallisce per modifiche locali, prova automaticamente `git reset --hard` + `git clean -fd` e ritenta il pull;
 - evita overwrite inutili (copia solo se i file cambiano)
 - supporta lock anti-concorrenza (se `flock` è disponibile)
 - non fallisce per file opzionali mancanti (`README.md`, `TODO.md`, `.env`)
@@ -98,6 +99,7 @@ Variabili utili per bootstrap avanzato:
 - `A0_TELEGRAM_AUTO_UPDATE_REPO` (default `true`)
 - `A0_TELEGRAM_GIT_REMOTE` (default `origin`)
 - `A0_TELEGRAM_GIT_BRANCH` (default branch tracciato localmente)
+- `A0_TELEGRAM_GIT_AUTO_REPAIR_LOCAL_CHANGES` (default `true`, per disabilitare auto `reset/clean`)
 
 ## Flusso operativo
 
@@ -177,3 +179,26 @@ Il bridge ora gestisce automaticamente i conflitti più comuni su `getUpdates`:
 - può fermare il polling inbound dopo N conflitti consecutivi (`TELEGRAM_CONFLICT_MAX_RETRIES`) per evitare loop rumorosi.
 
 Se il `409` continua, in genere c’è **un altro processo esterno** che usa lo stesso bot token in polling. In tal caso lascia attivo un solo consumer `getUpdates` per quel token.
+
+### Errore bootstrap: `git pull failed ... local changes would be overwritten`
+
+Se nei log vedi un errore simile:
+
+- `git pull failed ... Your local changes to the following files would be overwritten by merge`
+
+allora l'estensione **non viene aggiornata/installa** al riavvio, e potresti continuare a eseguire codice vecchio.
+
+Risoluzione (una tantum) nel container Agent Zero, sul repo persistente:
+
+- `git -C /a0/usr/extensions/repos/telegram_a0 reset --hard`
+- `git -C /a0/usr/extensions/repos/telegram_a0 clean -fd`
+- `git -C /a0/usr/extensions/repos/telegram_a0 pull --ff-only origin main`
+
+Poi riavvia Agent Zero/container.
+
+Nota: con la configurazione consigliata per canali separati,
+
+- `TELEGRAM_ENABLE_GLOBAL_NOTIFY=false` (default)
+- `TELEGRAM_REPLY_VIA_BRIDGE=true` (default)
+
+i messaggi della web UI non vengono inoltrati su Telegram, mentre i messaggi Telegram ricevono risposta direttamente sulla stessa chat Telegram.

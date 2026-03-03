@@ -31,6 +31,7 @@ LOCK_FILE="${A0_TELEGRAM_INSTALL_LOCK_FILE:-/tmp/agent0_telegram_ext_install.loc
 AUTO_UPDATE_REPO="${A0_TELEGRAM_AUTO_UPDATE_REPO:-true}"
 AUTO_UPDATE_REMOTE="${A0_TELEGRAM_GIT_REMOTE:-origin}"
 AUTO_UPDATE_BRANCH="${A0_TELEGRAM_GIT_BRANCH:-}"
+AUTO_REPAIR_LOCAL_CHANGES="${A0_TELEGRAM_GIT_AUTO_REPAIR_LOCAL_CHANGES:-true}"
 
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$LOCK_FILE"
@@ -46,6 +47,19 @@ fi
 
 update_repo_if_possible() {
   local repo_dir="$1"
+
+  _git_pull() {
+    local _repo="$1"
+    if [[ -n "$AUTO_UPDATE_BRANCH" ]]; then
+      if ! git -C "$_repo" fetch --prune "$AUTO_UPDATE_REMOTE"; then
+        warn "git fetch fallito, continuo con file locali già presenti."
+        return 1
+      fi
+      git -C "$_repo" pull --ff-only "$AUTO_UPDATE_REMOTE" "$AUTO_UPDATE_BRANCH"
+    else
+      git -C "$_repo" pull --ff-only "$AUTO_UPDATE_REMOTE"
+    fi
+  }
 
   case "${AUTO_UPDATE_REPO,,}" in
     0|false|no|off)
@@ -65,20 +79,31 @@ update_repo_if_possible() {
   fi
 
   log "Aggiorno repository locale da GitHub (remote=$AUTO_UPDATE_REMOTE)..."
-  if [[ -n "$AUTO_UPDATE_BRANCH" ]]; then
-    if ! git -C "$repo_dir" fetch --prune "$AUTO_UPDATE_REMOTE"; then
-      warn "git fetch fallito, continuo con file locali già presenti."
+  if _git_pull "$repo_dir"; then
+    log "Repository aggiornato con successo."
+    return 0
+  fi
+
+  case "${AUTO_REPAIR_LOCAL_CHANGES,,}" in
+    0|false|no|off)
+      warn "git pull fallito e auto-repair disabilitato: continuo con file locali già presenti."
       return 0
-    fi
-    if ! git -C "$repo_dir" pull --ff-only "$AUTO_UPDATE_REMOTE" "$AUTO_UPDATE_BRANCH"; then
-      warn "git pull --ff-only fallito, continuo con file locali già presenti."
-      return 0
-    fi
-  else
-    if ! git -C "$repo_dir" pull --ff-only "$AUTO_UPDATE_REMOTE"; then
-      warn "git pull --ff-only fallito, continuo con file locali già presenti."
-      return 0
-    fi
+      ;;
+  esac
+
+  warn "git pull fallito: provo auto-repair (reset --hard + clean -fd) e retry pull."
+  if ! git -C "$repo_dir" reset --hard; then
+    warn "auto-repair fallito su reset --hard, continuo con file locali già presenti."
+    return 0
+  fi
+  if ! git -C "$repo_dir" clean -fd; then
+    warn "auto-repair fallito su clean -fd, continuo con file locali già presenti."
+    return 0
+  fi
+
+  if ! _git_pull "$repo_dir"; then
+    warn "retry git pull fallito dopo auto-repair, continuo con file locali già presenti."
+    return 0
   fi
 
   log "Repository aggiornato con successo."
@@ -163,6 +188,7 @@ Riepilogo:
 Note:
 - Script idempotente: puoi lanciarlo ad ogni startup container.
 - All'avvio prova ad aggiornare il repository locale (`git pull --ff-only`) prima della copia file.
+- Se `git pull` fallisce per modifiche locali, per default prova auto-repair (`git reset --hard && git clean -fd`) e ritenta.
 - Configura i secrets richiesti (TELEGRAM_TOKEN, CHAT_ID, AGENT_ZERO_API_KEY) in Agent Zero.
 - Per dettagli e troubleshooting consulta: $AGENT0_ROOT/README_TELEGRAM_EXT.md
 EOF
