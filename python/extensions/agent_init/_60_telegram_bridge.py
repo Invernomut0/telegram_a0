@@ -624,7 +624,7 @@ class TelegramInboundWorker:
         try:
             resp = self._telegram_api("sendMessage", {
                 "chat_id": chat_id,
-                "text": "⏳",
+                "text": "🧠",
                 "disable_web_page_preview": True,
             })
             if isinstance(resp.get("result"), dict):
