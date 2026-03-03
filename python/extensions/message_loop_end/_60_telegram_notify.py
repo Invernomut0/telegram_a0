@@ -10,6 +10,13 @@ from typing import Any
 from urllib import request
 
 try:
+    from python.extensions.agent_init._60_telegram_bridge import _bootstrap_inbound_worker  # pyright: ignore[reportMissingImports]
+
+    _bootstrap_inbound_worker(reason="message_loop_end_import", agent=None)
+except Exception as _bootstrap_exc:
+    print(f"[telegram-notify] Bridge bootstrap fallback not available: {_bootstrap_exc}")
+
+try:
     from python.helpers.extension import Extension  # pyright: ignore[reportMissingImports]
 except Exception:  # pragma: no cover - local fallback outside Agent Zero runtime
     class Extension:  # type: ignore[override]

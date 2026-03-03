@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
+print("[telegram-bridge] Module loaded")
+
 try:
     import fcntl
 except Exception:  # pragma: no cover - non-posix fallback

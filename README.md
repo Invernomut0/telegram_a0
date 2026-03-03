@@ -184,6 +184,8 @@ Accepted initialization logs include:
 
 - `[telegram-bridge] Extension initialized (reason=agent_init)`
 - `[telegram-bridge] Extension initialized (reason=module_import)`
+- `[telegram-bridge] Extension initialized (reason=response_stream_import)`
+- `[telegram-bridge] Extension initialized (reason=message_loop_end_import)`
 
 If you do **not** see `[telegram-bridge] Extension initialized` at startup, the `agent_init` hook is not executing correctly and inbound Telegram will not work.
 

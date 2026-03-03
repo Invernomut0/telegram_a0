@@ -15,6 +15,7 @@
 
 ## Done
 
+- [x] **Owner:** Copilot — **Task:** Added multi-hook bootstrap fallback triggers (`response_stream_import`, `message_loop_end_import`) plus bridge module-load diagnostic log — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Added module-import fallback bootstrap for inbound worker to handle runtimes where `agent_init` hook is not triggered — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Fixed root-agent detection across all Telegram extensions to handle `agent.number` as int or string (prevents silent hook skip) — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Fixed installer output command-substitution side effect in final notes and normalized key installer logs/messages to English — **Date:** 2026-03-03
