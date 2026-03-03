@@ -54,6 +54,7 @@ Opzionali:
 - `TELEGRAM_POLL_LOCK_FILE` (default `/a0/tmp/telegram_poll.lock`)
 - `TELEGRAM_AUTO_DELETE_WEBHOOK_ON_CONFLICT` (default `true`)
 - `TELEGRAM_CONFLICT_BACKOFF_SEC` (default `10`)
+- `TELEGRAM_CONFLICT_MAX_RETRIES` (default `12`, `0` = infinito)
 - `TELEGRAM_NOTIFY_PREFIX`
 - `TELEGRAM_DEBUG` (`true/false`, default `false`)
 
@@ -140,5 +141,6 @@ Il bridge ora gestisce automaticamente i conflitti più comuni su `getUpdates`:
 - prova a rimuovere un eventuale webhook attivo (`deleteWebhook`), perché Telegram non permette webhook e polling insieme;
 - applica un backoff configurabile prima di riprovare;
 - usa un lock file locale per evitare doppio poller nello stesso host/container.
+- può fermare il polling inbound dopo N conflitti consecutivi (`TELEGRAM_CONFLICT_MAX_RETRIES`) per evitare loop rumorosi.
 
 Se il `409` continua, in genere c’è **un altro processo esterno** che usa lo stesso bot token in polling. In tal caso lascia attivo un solo consumer `getUpdates` per quel token.

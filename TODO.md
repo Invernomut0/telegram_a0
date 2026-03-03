@@ -15,6 +15,7 @@
 
 ## Done
 
+- [x] **Owner:** Copilot — **Task:** Aggiunto fail-safe su `HTTP 409` ripetuti con stop inbound e diagnostica webhook (`getWebhookInfo`) — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Hardened polling Telegram con gestione `HTTP 409` (deleteWebhook + backoff + lock file locale) — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Implementato bridge inbound Telegram → Agent Zero (`agent_init`) — **Date:** 2026-03-02
 - [x] **Owner:** Copilot — **Task:** Implementata pipeline notifiche outbound (`response_stream` + `message_loop_end`) — **Date:** 2026-03-02

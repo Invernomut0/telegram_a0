@@ -129,6 +129,7 @@ class TelegramBridgeConfig:
         lock_file: str,
         auto_delete_webhook_on_conflict: bool,
         conflict_backoff_sec: int,
+        conflict_max_retries: int,
         debug: bool,
         secrets_file: str,
     ):
@@ -146,6 +147,7 @@ class TelegramBridgeConfig:
         self.lock_file = lock_file
         self.auto_delete_webhook_on_conflict = auto_delete_webhook_on_conflict
         self.conflict_backoff_sec = conflict_backoff_sec
+        self.conflict_max_retries = conflict_max_retries
         self.debug = debug
         self.secrets_file = secrets_file
 
@@ -203,6 +205,10 @@ class TelegramBridgeConfig:
                 _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_CONFLICT_BACKOFF_SEC",)) or "10",
                 10,
             ),
+            conflict_max_retries=_safe_int(
+                _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_CONFLICT_MAX_RETRIES",)) or "12",
+                12,
+            ),
             debug=debug,
             secrets_file=secrets_file,
         )
@@ -215,6 +221,7 @@ class TelegramInboundWorker:
         self._lock = threading.Lock()
         self._contexts: dict[str, str] = self._load_contexts()
         self._poll_lock_handle: Any | None = None
+        self._conflict_streak = 0
 
     def _debug(self, message: str) -> None:
         if self.cfg.debug:
@@ -258,13 +265,15 @@ class TelegramInboundWorker:
             f"contexts_file={self.cfg.contexts_file} "
             f"lock_file={self.cfg.lock_file} "
             f"auto_delete_webhook_on_conflict={self.cfg.auto_delete_webhook_on_conflict} "
-            f"conflict_backoff_sec={self.cfg.conflict_backoff_sec}"
+            f"conflict_backoff_sec={self.cfg.conflict_backoff_sec} "
+            f"conflict_max_retries={self.cfg.conflict_max_retries}"
         )
 
         try:
             while self._running:
                 try:
                     updates = self._get_updates(offset)
+                    self._conflict_streak = 0
                     self._debug(f"getUpdates returned {len(updates)} updates (offset={offset})")
                     for upd in updates:
                         upd_id = int(upd.get("update_id", 0))
@@ -288,7 +297,22 @@ class TelegramInboundWorker:
 
     def _handle_polling_conflict(self, exc: error.HTTPError) -> None:
         body = exc.read().decode("utf-8", errors="ignore")
+        self._conflict_streak += 1
         print(f"[telegram-bridge] polling conflict (409): {body[:500]}")
+
+        if self.cfg.debug:
+            try:
+                webhook_info = self._telegram_api("getWebhookInfo", {})
+                result = webhook_info.get("result") if isinstance(webhook_info, dict) else None
+                if isinstance(result, dict):
+                    self._debug(
+                        "webhook info on 409 -> "
+                        f"url={result.get('url')!r} "
+                        f"pending_update_count={result.get('pending_update_count')} "
+                        f"last_error_message={result.get('last_error_message')!r}"
+                    )
+            except Exception as info_exc:
+                self._debug(f"getWebhookInfo failed on 409: {info_exc}")
 
         if self.cfg.auto_delete_webhook_on_conflict:
             try:
@@ -296,6 +320,15 @@ class TelegramInboundWorker:
                 self._debug("deleteWebhook executed after 409 conflict")
             except Exception as webhook_exc:
                 self._debug(f"deleteWebhook failed after 409 conflict: {webhook_exc}")
+
+        if self.cfg.conflict_max_retries > 0 and self._conflict_streak >= self.cfg.conflict_max_retries:
+            print(
+                "[telegram-bridge] stopping inbound polling after repeated 409 conflicts "
+                f"(count={self._conflict_streak}). "
+                "Another instance is likely polling with the same TELEGRAM_TOKEN."
+            )
+            self._running = False
+            return
 
         time.sleep(max(1, self.cfg.conflict_backoff_sec))
 
