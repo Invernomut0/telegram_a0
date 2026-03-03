@@ -28,6 +28,9 @@ AGENT0_ROOT="${1:-${AGENT0_ROOT:-/a0}}"
 SRC_DIR="${SOURCE_DIR:-$SCRIPT_DIR}"
 EXT_DIR="$AGENT0_ROOT/python/extensions"
 LOCK_FILE="${A0_TELEGRAM_INSTALL_LOCK_FILE:-/tmp/agent0_telegram_ext_install.lock}"
+AUTO_UPDATE_REPO="${A0_TELEGRAM_AUTO_UPDATE_REPO:-true}"
+AUTO_UPDATE_REMOTE="${A0_TELEGRAM_GIT_REMOTE:-origin}"
+AUTO_UPDATE_BRANCH="${A0_TELEGRAM_GIT_BRANCH:-}"
 
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$LOCK_FILE"
@@ -40,6 +43,48 @@ else
 fi
 
 [[ -d "$SRC_DIR" ]] || die "Directory sorgente non trovata: $SRC_DIR"
+
+update_repo_if_possible() {
+  local repo_dir="$1"
+
+  case "${AUTO_UPDATE_REPO,,}" in
+    0|false|no|off)
+      log "Auto-update repository disabilitato (A0_TELEGRAM_AUTO_UPDATE_REPO=$AUTO_UPDATE_REPO)."
+      return 0
+      ;;
+  esac
+
+  if [[ ! -d "$repo_dir/.git" ]]; then
+    log "Sorgente non è un repository git locale: skip update ($repo_dir)"
+    return 0
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    warn "git non disponibile: skip update repository."
+    return 0
+  fi
+
+  log "Aggiorno repository locale da GitHub (remote=$AUTO_UPDATE_REMOTE)..."
+  if [[ -n "$AUTO_UPDATE_BRANCH" ]]; then
+    if ! git -C "$repo_dir" fetch --prune "$AUTO_UPDATE_REMOTE"; then
+      warn "git fetch fallito, continuo con file locali già presenti."
+      return 0
+    fi
+    if ! git -C "$repo_dir" pull --ff-only "$AUTO_UPDATE_REMOTE" "$AUTO_UPDATE_BRANCH"; then
+      warn "git pull --ff-only fallito, continuo con file locali già presenti."
+      return 0
+    fi
+  else
+    if ! git -C "$repo_dir" pull --ff-only "$AUTO_UPDATE_REMOTE"; then
+      warn "git pull --ff-only fallito, continuo con file locali già presenti."
+      return 0
+    fi
+  fi
+
+  log "Repository aggiornato con successo."
+}
+
+update_repo_if_possible "$SRC_DIR"
 
 installed_count=0
 updated_count=0
@@ -117,6 +162,7 @@ Riepilogo:
 
 Note:
 - Script idempotente: puoi lanciarlo ad ogni startup container.
+- All'avvio prova ad aggiornare il repository locale (`git pull --ff-only`) prima della copia file.
 - Configura i secrets richiesti (TELEGRAM_TOKEN, CHAT_ID, AGENT_ZERO_API_KEY) in Agent Zero.
 - Per dettagli e troubleshooting consulta: $AGENT0_ROOT/README_TELEGRAM_EXT.md
 EOF

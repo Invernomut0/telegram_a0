@@ -92,6 +92,13 @@ class TelegramNotifyExtension(Extension):
         secrets_file = env_data.get("AGENT_ZERO_SECRETS_FILE", "/a0/usr/secrets.env").strip() or "/a0/usr/secrets.env"
         secrets_data = _parse_env_file(secrets_file)
 
+        global_notify_enabled = _as_bool(
+            _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_ENABLE_GLOBAL_NOTIFY",)) or "false",
+            False,
+        )
+        if not global_notify_enabled:
+            return None
+
         debug = _as_bool(_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_DEBUG",)) or "false", False)
 
         def _debug(message: str) -> None:

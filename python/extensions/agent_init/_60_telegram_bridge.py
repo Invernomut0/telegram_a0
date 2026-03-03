@@ -131,6 +131,7 @@ class TelegramBridgeConfig:
         conflict_backoff_sec: int,
         conflict_max_retries: int,
         use_chat_id_as_allowed: bool,
+        reply_via_bridge: bool,
         debug: bool,
         secrets_file: str,
     ):
@@ -150,6 +151,7 @@ class TelegramBridgeConfig:
         self.conflict_backoff_sec = conflict_backoff_sec
         self.conflict_max_retries = conflict_max_retries
         self.use_chat_id_as_allowed = use_chat_id_as_allowed
+        self.reply_via_bridge = reply_via_bridge
         self.debug = debug
         self.secrets_file = secrets_file
 
@@ -188,6 +190,10 @@ class TelegramBridgeConfig:
             or "false",
             False,
         )
+        reply_via_bridge = _as_bool(
+            _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_REPLY_VIA_BRIDGE",)) or "true",
+            True,
+        )
         if chat_id and not allowed and use_chat_id_as_allowed:
             allowed = {chat_id}
 
@@ -217,6 +223,7 @@ class TelegramBridgeConfig:
                 12,
             ),
             use_chat_id_as_allowed=use_chat_id_as_allowed,
+            reply_via_bridge=reply_via_bridge,
             debug=debug,
             secrets_file=secrets_file,
         )
@@ -267,6 +274,7 @@ class TelegramInboundWorker:
             f"secrets_file={self.cfg.secrets_file} "
             f"allowed_chat_ids={sorted(list(self.cfg.allowed_chat_ids)) if self.cfg.allowed_chat_ids else 'ALL'} "
             f"use_chat_id_as_allowed={self.cfg.use_chat_id_as_allowed} "
+            f"reply_via_bridge={self.cfg.reply_via_bridge} "
             f"poll_interval={self.cfg.poll_interval_sec}s "
             f"long_poll_timeout={self.cfg.long_poll_timeout_sec}s "
             f"lifetime_hours={self.cfg.lifetime_hours} "
@@ -514,6 +522,17 @@ class TelegramInboundWorker:
                 if isinstance(new_context_id, str) and new_context_id.strip():
                     self._contexts[chat_id] = new_context_id.strip()
                     self._save_contexts()
+
+                if self.cfg.reply_via_bridge:
+                    response_text = self._extract_response_text(data)
+                    if response_text:
+                        self._send_telegram(chat_id, response_text)
+                        self._debug(
+                            "inbound reply sent directly from bridge "
+                            f"chat_id={chat_id} text_len={len(response_text)}"
+                        )
+                    else:
+                        self._debug("no response text found in /api_message payload")
                 return
 
             except error.HTTPError as exc:
@@ -562,6 +581,28 @@ class TelegramInboundWorker:
             pass
 
         return urls
+
+    def _extract_response_text(self, data: dict[str, Any] | None) -> str:
+        if not isinstance(data, dict):
+            return ""
+
+        direct = data.get("response")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+
+        tool_args = data.get("tool_args")
+        if isinstance(tool_args, dict):
+            tool_text = tool_args.get("text") or tool_args.get("message")
+            if isinstance(tool_text, str) and tool_text.strip():
+                return tool_text.strip()
+
+        payload = data.get("payload")
+        if isinstance(payload, dict):
+            payload_text = payload.get("text") or payload.get("message") or payload.get("response")
+            if isinstance(payload_text, str) and payload_text.strip():
+                return payload_text.strip()
+
+        return ""
 
     def _send_telegram(self, chat_id: str, text: str) -> None:
         payload = {

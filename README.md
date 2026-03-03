@@ -47,6 +47,8 @@ Opzionali:
 - `AGENT_ZERO_URL` (default `http://localhost:80`)
 - `TELEGRAM_ALLOWED_CHAT_IDS` (lista separata da virgole; se vuoto accetta tutte le chat inbound)
 - `TELEGRAM_USE_CHAT_ID_AS_ALLOWED` (default `false`; se `true`, quando `TELEGRAM_ALLOWED_CHAT_IDS` è vuoto usa `CHAT_ID` come filtro inbound)
+- `TELEGRAM_REPLY_VIA_BRIDGE` (default `true`; risponde in Telegram direttamente dal bridge inbound)
+- `TELEGRAM_ENABLE_GLOBAL_NOTIFY` (default `false`; inoltra su `CHAT_ID` tutte le risposte Agent0, inclusa UI web)
 - `TELEGRAM_DEFAULT_PROJECT`
 - `TELEGRAM_POLL_INTERVAL_SEC`
 - `TELEGRAM_LONG_POLL_TIMEOUT_SEC`
@@ -82,22 +84,40 @@ Se la tua installazione persiste solo `/a0/usr`, usa questo pattern:
 
 Lo script è **idempotente** e quindi sicuro al bootstrap:
 
+- prova ad aggiornare il repository locale con `git pull --ff-only` prima della copia file;
 - evita overwrite inutili (copia solo se i file cambiano)
 - supporta lock anti-concorrenza (se `flock` è disponibile)
 - non fallisce per file opzionali mancanti (`README.md`, `TODO.md`, `.env`)
+- se `git pull` fallisce, continua usando i file locali già presenti (fail-safe)
 
 Variabili utili per bootstrap avanzato:
 
 - `AGENT0_ROOT` (default `/a0`)
 - `SOURCE_DIR` (default directory dello script)
 - `A0_TELEGRAM_INSTALL_LOCK_FILE` (default `/tmp/agent0_telegram_ext_install.lock`)
+- `A0_TELEGRAM_AUTO_UPDATE_REPO` (default `true`)
+- `A0_TELEGRAM_GIT_REMOTE` (default `origin`)
+- `A0_TELEGRAM_GIT_BRANCH` (default branch tracciato localmente)
 
 ## Flusso operativo
 
 1. L’estensione `agent_init` avvia il loop Telegram long polling.
 2. Ogni messaggio testuale ricevuto viene inoltrato a `/api_message`.
 3. Agent Zero risponde normalmente.
-4. Le estensioni `response_stream` + `message_loop_end` pubblicano la risposta su Telegram.
+4. Con default `TELEGRAM_REPLY_VIA_BRIDGE=true`, la risposta viene inviata alla stessa chat Telegram che ha scritto il messaggio.
+5. `response_stream` + `message_loop_end` sono usati solo se abiliti `TELEGRAM_ENABLE_GLOBAL_NOTIFY=true`.
+
+## Separazione canali (consigliata)
+
+Per avere canali indipendenti:
+
+- Messaggi da **web UI**: restano solo in web UI (non inoltrati a Telegram)
+- Messaggi da **Telegram**: risposta solo su Telegram (stessa chat)
+
+Configura:
+
+- `TELEGRAM_REPLY_VIA_BRIDGE=true`
+- `TELEGRAM_ENABLE_GLOBAL_NOTIFY=false`
 
 ## Comandi Telegram supportati
 
