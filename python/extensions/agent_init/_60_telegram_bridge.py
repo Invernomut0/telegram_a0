@@ -25,7 +25,30 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-print("[telegram-bridge] Module loaded")
+def _resolve_extension_version() -> str:
+    candidates = [
+        os.getenv("TELEGRAM_EXT_VERSION_FILE", "").strip(),
+        "/a0/TELEGRAM_EXT_VERSION",
+        "/a0/usr/extensions/repos/telegram_a0/VERSION",
+    ]
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            p = Path(candidate)
+            if p.exists() and p.is_file():
+                value = p.read_text(encoding="utf-8").strip()
+                if value:
+                    return value
+        except Exception:
+            continue
+
+    return "unknown"
+
+
+EXT_VERSION = _resolve_extension_version()
+print(f"[telegram-bridge] Module loaded (version={EXT_VERSION})")
 
 try:
     import fcntl
@@ -684,7 +707,10 @@ def _bootstrap_inbound_worker(reason: str, agent: Any | None = None) -> bool:
         cfg = TelegramBridgeConfig.from_env()
         if not cfg.enabled:
             # Keep this log visible even when debug is off: missing secrets is a common root cause.
-            print("[telegram-bridge] Bootstrap skipped: missing TELEGRAM_TOKEN or AGENT_ZERO_API_KEY")
+            print(
+                "[telegram-bridge] Bootstrap skipped: "
+                f"missing TELEGRAM_TOKEN or AGENT_ZERO_API_KEY (version={EXT_VERSION})"
+            )
             if cfg.debug:
                 print(
                     "[telegram-bridge][debug] bootstrap env -> "
@@ -712,7 +738,7 @@ def _bootstrap_inbound_worker(reason: str, agent: Any | None = None) -> bool:
                 pass
 
         _BOOTSTRAP_STARTED = True
-        print(f"[telegram-bridge] Extension initialized (reason={reason})")
+        print(f"[telegram-bridge] Extension initialized (reason={reason}, version={EXT_VERSION})")
         return True
 
 

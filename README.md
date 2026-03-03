@@ -103,6 +103,13 @@ Variabili utili per bootstrap avanzato:
 - `A0_TELEGRAM_GIT_AUTO_RESTORE_TRACKED_FILES` (default `true`, restores changed tracked files before/after pull)
 - `A0_TELEGRAM_GIT_RESTORE_FILES` (default `install_agent0_telegram_ext.sh`, space-separated tracked files)
 
+Version diagnostics:
+
+- The installer reads `VERSION` from the addon source and writes `/a0/TELEGRAM_EXT_VERSION`.
+- Bridge startup logs include the loaded version, e.g.:
+  - `[telegram-bridge] Module loaded (version=...)`
+  - `[telegram-bridge] Extension initialized (..., version=...)`
+
 Important bootstrap note:
 
 - Agent Zero's extension bootstrap performs `git pull` **before** running this installer.

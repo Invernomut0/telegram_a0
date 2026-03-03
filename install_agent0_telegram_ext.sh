@@ -35,6 +35,22 @@ AUTO_REPAIR_LOCAL_CHANGES="${A0_TELEGRAM_GIT_AUTO_REPAIR_LOCAL_CHANGES:-true}"
 AUTO_RESTORE_TRACKED_FILES="${A0_TELEGRAM_GIT_AUTO_RESTORE_TRACKED_FILES:-true}"
 RESTORE_FILE_LIST="${A0_TELEGRAM_GIT_RESTORE_FILES:-install_agent0_telegram_ext.sh}"
 
+resolve_extension_version() {
+  local version_file="$1/VERSION"
+  if [[ -f "$version_file" ]]; then
+    local ver
+    ver="$(tr -d '[:space:]' < "$version_file")"
+    if [[ -n "$ver" ]]; then
+      printf '%s' "$ver"
+      return 0
+    fi
+  fi
+  printf '%s' "unknown"
+}
+
+EXT_VERSION="$(resolve_extension_version "$SRC_DIR")"
+log "Extension version: $EXT_VERSION"
+
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$LOCK_FILE"
   if ! flock -n 9; then
@@ -204,11 +220,16 @@ copy_optional_if_present "$SRC_DIR/README.md" "$AGENT0_ROOT/README_TELEGRAM_EXT.
 copy_optional_if_present "$SRC_DIR/TODO.md" "$AGENT0_ROOT/TODO_TELEGRAM_EXT.md"
 copy_optional_if_present "$SRC_DIR/.env" "$AGENT0_ROOT/.env.telegram_example"
 
+# Version marker for runtime diagnostics
+printf '%s\n' "$EXT_VERSION" > "$AGENT0_ROOT/TELEGRAM_EXT_VERSION"
+log "version marker: $AGENT0_ROOT/TELEGRAM_EXT_VERSION"
+
 cat <<EOF
 ✅ Telegram extension installed (startup-safe)
 
 Root Agent0:     $AGENT0_ROOT
-Sorgente addon:  $SRC_DIR
+Addon source:    $SRC_DIR
+Extension ver:   $EXT_VERSION
 
 Summary:
 - installed: $installed_count
