@@ -660,17 +660,67 @@ class TelegramInboundWorker:
             pass
 
 
+_BOOTSTRAP_LOCK = threading.Lock()
+_BOOTSTRAP_STARTED = False
+
+
+def _is_root_agent_number(agent: Any) -> bool:
+    raw_number = getattr(agent, "number", 0)
+    try:
+        return int(raw_number) == 0
+    except Exception:
+        return str(raw_number).strip() == "0"
+
+
+def _bootstrap_inbound_worker(reason: str, agent: Any | None = None) -> bool:
+    global _BOOTSTRAP_STARTED
+
+    with _BOOTSTRAP_LOCK:
+        if _BOOTSTRAP_STARTED:
+            return False
+
+        cfg = TelegramBridgeConfig.from_env()
+        if not cfg.enabled:
+            # Keep this log visible even when debug is off: missing secrets is a common root cause.
+            print("[telegram-bridge] Bootstrap skipped: missing TELEGRAM_TOKEN or AGENT_ZERO_API_KEY")
+            if cfg.debug:
+                print(
+                    "[telegram-bridge][debug] bootstrap env -> "
+                    f"reason={reason} "
+                    f"TELEGRAM_TOKEN={_mask(cfg.token)} "
+                    f"AGENT_ZERO_API_KEY={_mask(cfg.api_key)} "
+                    f"AGENT_ZERO_URL={cfg.api_url} "
+                    f"SECRETS_FILE={cfg.secrets_file}"
+                )
+            _BOOTSTRAP_STARTED = True
+            return False
+
+        worker = TelegramInboundWorker(cfg)
+        thread = threading.Thread(
+            target=worker.run,
+            daemon=True,
+            name="telegram-inbound-bridge",
+        )
+        thread.start()
+
+        if agent is not None:
+            try:
+                agent.set_data("_telegram_inbound_worker", worker)
+            except Exception:
+                pass
+
+        _BOOTSTRAP_STARTED = True
+        print(f"[telegram-bridge] Extension initialized (reason={reason})")
+        return True
+
+
 class TelegramBridgeExtension(Extension):
     _started = False
     _start_lock = threading.Lock()
 
     @staticmethod
     def _is_root_agent(agent: Any) -> bool:
-        raw_number = getattr(agent, "number", 0)
-        try:
-            return int(raw_number) == 0
-        except Exception:
-            return str(raw_number).strip() == "0"
+        return _is_root_agent_number(agent)
 
     async def execute(self, **kwargs) -> Any:
         # Start only once, on top-level agent.
@@ -681,39 +731,15 @@ class TelegramBridgeExtension(Extension):
             if TelegramBridgeExtension._started:
                 return None
 
-            cfg = TelegramBridgeConfig.from_env()
-            if not cfg.enabled:
-                print("[telegram-bridge] Skipping startup: missing TELEGRAM_TOKEN or AGENT_ZERO_API_KEY")
-                if cfg.debug:
-                    print(
-                        "[telegram-bridge][debug] startup env -> "
-                        f"TELEGRAM_TOKEN={_mask(cfg.token)} "
-                        f"AGENT_ZERO_API_KEY={_mask(cfg.api_key)} "
-                        f"AGENT_ZERO_URL={cfg.api_url} "
-                        f"SECRETS_FILE={cfg.secrets_file}"
-                    )
-                TelegramBridgeExtension._started = True
-                return None
-
-            if cfg.debug:
-                print(
-                    "[telegram-bridge][debug] startup env -> "
-                    f"TELEGRAM_TOKEN={_mask(cfg.token)} "
-                    f"AGENT_ZERO_API_KEY={_mask(cfg.api_key)} "
-                    f"AGENT_ZERO_URL={cfg.api_url} "
-                    f"SECRETS_FILE={cfg.secrets_file}"
-                )
-
-            worker = TelegramInboundWorker(cfg)
-            thread = threading.Thread(
-                target=worker.run,
-                daemon=True,
-                name="telegram-inbound-bridge",
-            )
-            thread.start()
-
-            self.agent.set_data("_telegram_inbound_worker", worker)
+            _bootstrap_inbound_worker(reason="agent_init", agent=self.agent)
             TelegramBridgeExtension._started = True
-            print("[telegram-bridge] Extension initialized")
 
         return None
+
+
+# Fallback bootstrap: in some Agent Zero runtimes the agent_init hook may not be invoked.
+# Starting here ensures inbound polling can still run as soon as this module is imported.
+try:
+    _bootstrap_inbound_worker(reason="module_import", agent=None)
+except Exception as _bootstrap_exc:
+    print(f"[telegram-bridge] Bootstrap error on module import: {_bootstrap_exc}")

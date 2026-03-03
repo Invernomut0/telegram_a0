@@ -116,6 +116,7 @@ Inbound update types:
 
 - The bridge listens to both `message` and `channel_post` Telegram updates.
 - This helps when the bot is used in channels where updates arrive as `channel_post` instead of `message`.
+- The bridge also includes a module-import fallback bootstrap, so inbound polling can start even if `agent_init` is not invoked in a specific runtime.
 
 ## Flusso operativo
 
@@ -178,6 +179,11 @@ Con le ultime patch, anche le estensioni outbound (`response_stream` e `message_
 - `[telegram-bridge][debug] Agent0 response status=ok ...`
 - `[telegram-notify] skip notify: missing config -> ...`
 - `[telegram-notify][debug] sendMessage success`
+
+Accepted initialization logs include:
+
+- `[telegram-bridge] Extension initialized (reason=agent_init)`
+- `[telegram-bridge] Extension initialized (reason=module_import)`
 
 If you do **not** see `[telegram-bridge] Extension initialized` at startup, the `agent_init` hook is not executing correctly and inbound Telegram will not work.
 
