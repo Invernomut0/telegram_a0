@@ -253,3 +253,9 @@ Note: with the recommended channel-separation configuration,
 - `TELEGRAM_REPLY_VIA_BRIDGE=true` (default)
 
 web UI messages are not forwarded to Telegram, while Telegram messages receive a reply directly on the same Telegram chat.
+
+## Version & Changelog
+
+Current version: **0.2.4**
+
+For the full history of changes, additions, and fixes see [CHANGELOG.md](CHANGELOG.md).

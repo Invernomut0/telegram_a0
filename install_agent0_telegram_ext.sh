@@ -3,7 +3,7 @@
 # Startup-safe: idempotent, with concurrency lock and copy-only-when-changed behavior.
 #
 # Usage:
-#   ./install_agent0_telegram_ext.sh [/percorso/alla/root/agentzero]
+#   ./install_agent0_telegram_ext.sh [/path/to/agentzero/root]
 #
 # Typical example inside Agent Zero container:
 #   ./install_agent0_telegram_ext.sh /a0
