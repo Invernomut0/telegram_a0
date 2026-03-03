@@ -15,6 +15,7 @@
 
 ## Done
 
+- [x] **Owner:** Copilot — **Task:** Corretto filtro inbound: `CHAT_ID` non è più allowlist implicita (opt-in con `TELEGRAM_USE_CHAT_ID_AS_ALLOWED`) + log chat bloccate — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Fix bridge Telegram↔Agent0: fallback automatico porta localhost (80/8080) e logging diagnostico avanzato — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Allineata risoluzione secrets outbound (env + `/a0/usr/secrets.env`) in `telegram_notify`/`telegram_capture_response` — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Aggiunto fail-safe su `HTTP 409` ripetuti con stop inbound e diagnostica webhook (`getWebhookInfo`) — **Date:** 2026-03-03

@@ -45,7 +45,8 @@ Alias supportati:
 Opzionali:
 
 - `AGENT_ZERO_URL` (default `http://localhost:80`)
-- `TELEGRAM_ALLOWED_CHAT_IDS` (lista separata da virgole)
+- `TELEGRAM_ALLOWED_CHAT_IDS` (lista separata da virgole; se vuoto accetta tutte le chat inbound)
+- `TELEGRAM_USE_CHAT_ID_AS_ALLOWED` (default `false`; se `true`, quando `TELEGRAM_ALLOWED_CHAT_IDS` è vuoto usa `CHAT_ID` come filtro inbound)
 - `TELEGRAM_DEFAULT_PROJECT`
 - `TELEGRAM_POLL_INTERVAL_SEC`
 - `TELEGRAM_LONG_POLL_TIMEOUT_SEC`
@@ -113,6 +114,8 @@ Variabili utili per bootstrap avanzato:
 - Se non arrivano messaggi inbound, verifica `TELEGRAM_TOKEN`.
 - Se inbound arriva ma Agent Zero non risponde, verifica `AGENT_ZERO_API_KEY` e `AGENT_ZERO_URL`.
 - Se Agent Zero risponde ma Telegram non riceve, verifica `CHAT_ID` e permessi del bot nel canale/chat.
+
+Importante: `CHAT_ID` è usato per l'**outbound** (dove inviare notifiche). Non filtra l'inbound a meno che non abiliti esplicitamente `TELEGRAM_USE_CHAT_ID_AS_ALLOWED=true`.
 
 ### Debug verboso consigliato
 

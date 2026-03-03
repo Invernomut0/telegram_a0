@@ -130,6 +130,7 @@ class TelegramBridgeConfig:
         auto_delete_webhook_on_conflict: bool,
         conflict_backoff_sec: int,
         conflict_max_retries: int,
+        use_chat_id_as_allowed: bool,
         debug: bool,
         secrets_file: str,
     ):
@@ -148,6 +149,7 @@ class TelegramBridgeConfig:
         self.auto_delete_webhook_on_conflict = auto_delete_webhook_on_conflict
         self.conflict_backoff_sec = conflict_backoff_sec
         self.conflict_max_retries = conflict_max_retries
+        self.use_chat_id_as_allowed = use_chat_id_as_allowed
         self.debug = debug
         self.secrets_file = secrets_file
 
@@ -176,12 +178,17 @@ class TelegramBridgeConfig:
             secrets_data,
             keys=("AGENT_ZERO_API_KEY", "API_KEY", "A0_API_KEY"),
         )
-        debug = _as_bool(os.getenv("TELEGRAM_DEBUG", "false"), False)
+        debug = _as_bool(_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_DEBUG",)) or "false", False)
 
         chat_id = _resolve_secret(env_data, secrets_data, keys=("CHAT_ID", "TELEGRAM_CHAT_ID"))
         raw_allowed = _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_ALLOWED_CHAT_IDS",))
         allowed = {x.strip() for x in raw_allowed.split(",") if x.strip()}
-        if chat_id and not allowed:
+        use_chat_id_as_allowed = _as_bool(
+            _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_USE_CHAT_ID_AS_ALLOWED", "TELEGRAM_STRICT_CHAT_FILTER"))
+            or "false",
+            False,
+        )
+        if chat_id and not allowed and use_chat_id_as_allowed:
             allowed = {chat_id}
 
         return TelegramBridgeConfig(
@@ -209,6 +216,7 @@ class TelegramBridgeConfig:
                 _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_CONFLICT_MAX_RETRIES",)) or "12",
                 12,
             ),
+            use_chat_id_as_allowed=use_chat_id_as_allowed,
             debug=debug,
             secrets_file=secrets_file,
         )
@@ -222,6 +230,7 @@ class TelegramInboundWorker:
         self._contexts: dict[str, str] = self._load_contexts()
         self._poll_lock_handle: Any | None = None
         self._conflict_streak = 0
+        self._blocked_chat_logged: set[str] = set()
 
     def _debug(self, message: str) -> None:
         if self.cfg.debug:
@@ -257,6 +266,7 @@ class TelegramInboundWorker:
             f"api_url={self.cfg.api_url} "
             f"secrets_file={self.cfg.secrets_file} "
             f"allowed_chat_ids={sorted(list(self.cfg.allowed_chat_ids)) if self.cfg.allowed_chat_ids else 'ALL'} "
+            f"use_chat_id_as_allowed={self.cfg.use_chat_id_as_allowed} "
             f"poll_interval={self.cfg.poll_interval_sec}s "
             f"long_poll_timeout={self.cfg.long_poll_timeout_sec}s "
             f"lifetime_hours={self.cfg.lifetime_hours} "
@@ -422,6 +432,14 @@ class TelegramInboundWorker:
             return
 
         if self.cfg.allowed_chat_ids and chat_id not in self.cfg.allowed_chat_ids:
+            if chat_id not in self._blocked_chat_logged:
+                print(
+                    "[telegram-bridge] inbound skipped: chat non autorizzata "
+                    f"chat_id={chat_id}. "
+                    "Imposta TELEGRAM_ALLOWED_CHAT_IDS includendo questa chat, "
+                    "oppure svuotalo per accettare tutte le chat."
+                )
+                self._blocked_chat_logged.add(chat_id)
             self._debug(f"chat_id={chat_id} not in allowed list, skipping")
             return
 
