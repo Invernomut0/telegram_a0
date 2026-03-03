@@ -44,7 +44,7 @@ Alias supportati:
 
 Opzionali:
 
-- `AGENT_ZERO_URL` (default `http://localhost:8080`)
+- `AGENT_ZERO_URL` (default `http://localhost:80`)
 - `TELEGRAM_ALLOWED_CHAT_IDS` (lista separata da virgole)
 - `TELEGRAM_DEFAULT_PROJECT`
 - `TELEGRAM_POLL_INTERVAL_SEC`
@@ -127,6 +127,16 @@ Con questo flag vedrai nei log:
 - motivi di skip (chat non ammessa, payload vuoto, ecc.)
 - esito inoltro a `/api_message`
 - esito invio `sendMessage`
+
+Con le ultime patch, anche le estensioni outbound (`response_stream` e `message_loop_end`) leggono i secrets sia da `os.environ` sia da file (`/a0/usr/secrets.env`), allineandosi al bridge inbound.
+
+### Log utili da cercare
+
+- `[telegram-bridge] Inbound worker started`
+- `[telegram-bridge][debug] forwarding to Agent0 -> target_urls=[...]`
+- `[telegram-bridge][debug] Agent0 response status=ok ...`
+- `[telegram-notify] skip notify: missing config -> ...`
+- `[telegram-notify][debug] sendMessage success`
 
 Se trovi il log:
 

@@ -7,6 +7,7 @@ text (from response tool args) so `message_loop_end` can publish it to Telegram.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 try:
@@ -22,7 +23,26 @@ class TelegramCaptureResponseExtension(Extension):
         if getattr(self.agent, "number", 0) != 0:
             return None
 
-        debug = (os.getenv("TELEGRAM_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"})
+        env_data = dict(os.environ)
+        secrets_file = env_data.get("AGENT_ZERO_SECRETS_FILE", "/a0/usr/secrets.env").strip() or "/a0/usr/secrets.env"
+
+        debug_raw = env_data.get("TELEGRAM_DEBUG", "").strip()
+        if not debug_raw:
+            p = Path(secrets_file)
+            try:
+                if p.exists() and p.is_file():
+                    for line in p.read_text(encoding="utf-8").splitlines():
+                        raw = line.strip()
+                        if not raw or raw.startswith("#") or "=" not in raw:
+                            continue
+                        key, val = raw.split("=", 1)
+                        if key.strip() == "TELEGRAM_DEBUG":
+                            debug_raw = val.strip().strip('"').strip("'")
+                            break
+            except Exception:
+                pass
+
+        debug = debug_raw.strip().lower() in {"1", "true", "yes", "on"}
 
         def _debug(message: str) -> None:
             if debug:

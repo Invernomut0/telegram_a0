@@ -9,7 +9,7 @@ Required secrets/environment variables (typically in Agent Zero secrets):
 
 Recommended:
 - CHAT_ID (also used as default allowed inbound chat)
-- AGENT_ZERO_URL (default: http://localhost:8080)
+- AGENT_ZERO_URL (default: http://localhost:80)
 - TELEGRAM_DEBUG=true (verbose diagnostics)
 """
 
@@ -23,7 +23,7 @@ import errno
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
-from urllib import error, request
+from urllib import error, parse, request
 
 try:
     import fcntl
@@ -170,7 +170,7 @@ class TelegramBridgeConfig:
             env_data,
             secrets_data,
             keys=("AGENT_ZERO_URL", "A0_URL"),
-        ).rstrip("/") or "http://localhost:8080"
+        ).rstrip("/") or "http://localhost:80"
         api_key = _resolve_secret(
             env_data,
             secrets_data,
@@ -457,50 +457,93 @@ class TelegramInboundWorker:
         elif self.cfg.default_project:
             payload["project"] = self.cfg.default_project
 
+        target_urls = self._build_agent_message_urls()
         self._debug(
             "forwarding to Agent0 -> "
-            f"url={self.cfg.api_url}/api_message "
+            f"target_urls={target_urls} "
             f"chat_id={chat_id} "
             f"has_context_id={bool(context_id)} "
             f"has_project={bool(payload.get('project'))} "
             f"text_len={len(text)}"
         )
 
-        url = f"{self.cfg.api_url}/api_message"
         data = None
+        last_connection_error: Exception | None = None
+
+        for url in target_urls:
+            try:
+                req = request.Request(
+                    url=url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-API-KEY": self.cfg.api_key,
+                    },
+                    method="POST",
+                )
+
+                with request.urlopen(req, timeout=180) as resp:
+                    raw = resp.read().decode("utf-8")
+                    data = json.loads(raw) if raw else {}
+
+                self._debug(
+                    f"Agent0 response status=ok url={url} "
+                    f"context_id={data.get('context_id') if isinstance(data, dict) else None} "
+                    f"has_response={bool(isinstance(data, dict) and data.get('response'))}"
+                )
+
+                new_context_id = data.get("context_id") if isinstance(data, dict) else None
+                if isinstance(new_context_id, str) and new_context_id.strip():
+                    self._contexts[chat_id] = new_context_id.strip()
+                    self._save_contexts()
+                return
+
+            except error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="ignore")
+                self._debug(f"Agent0 HTTPError url={url} code={exc.code} body={body[:500]!r}")
+                self._send_telegram(chat_id, f"❌ Errore Agent0 HTTP {exc.code}: {body[:1200]}")
+                return
+            except error.URLError as exc:
+                last_connection_error = exc
+                self._debug(f"Agent0 URLError on {url}: {exc}")
+                continue
+            except Exception as exc:
+                self._debug(f"Agent0 generic error on {url}: {exc}")
+                self._send_telegram(chat_id, f"❌ Errore inoltro verso Agent0: {exc}")
+                return
+
+        details = str(last_connection_error) if last_connection_error else "endpoint non raggiungibile"
+        self._send_telegram(
+            chat_id,
+            "❌ Impossibile contattare Agent0 su nessun endpoint configurato. "
+            f"Verifica AGENT_ZERO_URL. Dettaglio: {details}",
+        )
+
+    def _build_agent_message_urls(self) -> list[str]:
+        base_url = self.cfg.api_url.rstrip("/")
+        primary = f"{base_url}/api_message"
+        urls: list[str] = [primary]
 
         try:
-            req = request.Request(
-                url=url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "X-API-KEY": self.cfg.api_key,
-                },
-                method="POST",
-            )
+            parsed = parse.urlparse(base_url)
+            host = (parsed.hostname or "").strip().lower()
+            if host in {"localhost", "127.0.0.1"}:
+                if parsed.port == 8080:
+                    alt_netloc = f"{host}:80"
+                elif parsed.port in {80, None}:
+                    alt_netloc = f"{host}:8080"
+                else:
+                    alt_netloc = ""
 
-            with request.urlopen(req, timeout=180) as resp:
-                raw = resp.read().decode("utf-8")
-                data = json.loads(raw) if raw else {}
+                if alt_netloc:
+                    alt_base = parse.urlunparse((parsed.scheme or "http", alt_netloc, parsed.path, "", "", "")).rstrip("/")
+                    alt_url = f"{alt_base}/api_message"
+                    if alt_url not in urls:
+                        urls.append(alt_url)
+        except Exception:
+            pass
 
-            self._debug(
-                f"Agent0 response status=ok context_id={data.get('context_id') if isinstance(data, dict) else None} "
-                f"has_response={bool(isinstance(data, dict) and data.get('response'))}"
-            )
-
-            new_context_id = data.get("context_id") if isinstance(data, dict) else None
-            if isinstance(new_context_id, str) and new_context_id.strip():
-                self._contexts[chat_id] = new_context_id.strip()
-                self._save_contexts()
-
-        except error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="ignore")
-            self._debug(f"Agent0 HTTPError code={exc.code} body={body[:500]!r}")
-            self._send_telegram(chat_id, f"❌ Errore Agent0 HTTP {exc.code}: {body[:1200]}")
-        except Exception as exc:
-            self._debug(f"Agent0 generic error: {exc}")
-            self._send_telegram(chat_id, f"❌ Errore inoltro verso Agent0: {exc}")
+        return urls
 
     def _send_telegram(self, chat_id: str, text: str) -> None:
         payload = {

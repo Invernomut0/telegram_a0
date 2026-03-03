@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 from urllib import request
 
@@ -34,26 +36,83 @@ def _send_telegram_message(token: str, chat_id: str, text: str) -> None:
         raise RuntimeError(f"Telegram sendMessage failed: {data}")
 
 
+def _parse_env_file(path: str) -> dict[str, str]:
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        return {}
+
+    values: dict[str, str] = {}
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            key, val = raw.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key:
+                values[key] = val
+    except Exception:
+        return {}
+
+    return values
+
+
+def _resolve_secret(
+    env_data: dict[str, str],
+    secrets_data: dict[str, str],
+    keys: Iterable[str],
+) -> str:
+    for key in keys:
+        val = env_data.get(key, "").strip()
+        if val:
+            return val
+    for key in keys:
+        val = secrets_data.get(key, "").strip()
+        if val:
+            return val
+    return ""
+
+
+def _as_bool(value: str, default: bool = False) -> bool:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 class TelegramNotifyExtension(Extension):
+    _warned_missing_config = False
+
     async def execute(self, loop_data=None, **kwargs) -> Any:
         if getattr(self.agent, "number", 0) != 0:
             return None
 
-        debug = (os.getenv("TELEGRAM_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"})
+        env_data = dict(os.environ)
+        secrets_file = env_data.get("AGENT_ZERO_SECRETS_FILE", "/a0/usr/secrets.env").strip() or "/a0/usr/secrets.env"
+        secrets_data = _parse_env_file(secrets_file)
+
+        debug = _as_bool(_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_DEBUG",)) or "false", False)
 
         def _debug(message: str) -> None:
             if debug:
                 print(f"[telegram-notify][debug] {message}")
 
-        token = os.getenv("TELEGRAM_TOKEN", "").strip()
-        chat_id = os.getenv("CHAT_ID", "").strip()
+        token = _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_TOKEN", "TELEGRAM_BOT_TOKEN"))
+        chat_id = _resolve_secret(env_data, secrets_data, keys=("CHAT_ID", "TELEGRAM_CHAT_ID"))
         if not token or not chat_id:
-            _debug(
-                "skip notify: missing env -> "
-                f"TELEGRAM_TOKEN={'set' if bool(token) else 'missing'} "
-                f"CHAT_ID={'set' if bool(chat_id) else 'missing'}"
-            )
+            if not TelegramNotifyExtension._warned_missing_config:
+                print(
+                    "[telegram-notify] skip notify: missing config -> "
+                    f"TELEGRAM_TOKEN={'set' if bool(token) else 'missing'} "
+                    f"CHAT_ID={'set' if bool(chat_id) else 'missing'} "
+                    f"SECRETS_FILE={secrets_file}"
+                )
+                TelegramNotifyExtension._warned_missing_config = True
+            _debug("notify disabled due to missing token/chat id")
             return None
+
+        TelegramNotifyExtension._warned_missing_config = False
 
         pending = self.agent.get_data("_telegram_pending_response")
         if isinstance(pending, str) and pending.strip():
@@ -75,7 +134,7 @@ class TelegramNotifyExtension(Extension):
             _debug("skip notify: no pending/fallback text to send")
             return None
 
-        prefix = os.getenv("TELEGRAM_NOTIFY_PREFIX", "🤖 Agent0\n")
+        prefix = _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_NOTIFY_PREFIX",)) or "🤖 Agent0\n"
         body = f"{prefix}{text}" if prefix else text
 
         last_sent = self.agent.get_data("_telegram_last_sent")
