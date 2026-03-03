@@ -299,7 +299,7 @@ class TelegramBridgeConfig:
             default_project=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_DEFAULT_PROJECT",)) or None,
             skip_old_updates_on_start=_as_bool(_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_SKIP_OLD_UPDATES",)) or "true", True),
             offset_file=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_OFFSET_FILE",)) or "/a0/tmp/telegram_offset.txt",
-            contexts_file=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_CONTEXTS_FILE",)) or "/a0/tmp/telegram_contexts.json",
+            contexts_file=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_CONTEXTS_FILE",)) or "/a0/usr/telegram_contexts.json",
             lock_file=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_POLL_LOCK_FILE",)) or "/a0/tmp/telegram_poll.lock",
             auto_delete_webhook_on_conflict=_as_bool(
                 _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_AUTO_DELETE_WEBHOOK_ON_CONFLICT",)) or "true",

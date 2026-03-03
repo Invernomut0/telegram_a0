@@ -55,6 +55,7 @@ Optional variables:
 - `TELEGRAM_CONTEXT_LIFETIME_HOURS`
 - `TELEGRAM_SKIP_OLD_UPDATES`
 - `TELEGRAM_POLL_LOCK_FILE` (default `/a0/tmp/telegram_poll.lock`)
+- `TELEGRAM_CONTEXTS_FILE` (default `/a0/usr/telegram_contexts.json` — persistent across restarts; maps each Telegram `chat_id` to its Agent Zero `context_id`)
 - `TELEGRAM_AUTO_DELETE_WEBHOOK_ON_CONFLICT` (default `true`)
 - `TELEGRAM_CONFLICT_BACKOFF_SEC` (default `10`)
 - `TELEGRAM_CONFLICT_MAX_RETRIES` (default `12`, `0` = unlimited)
@@ -161,7 +162,7 @@ Set:
 ## Supported Telegram Commands
 
 - `/start` or `/help`: confirms the bridge is active.
-- `/reset`: resets the Telegram → `context_id` mapping.
+- `/reset`: resets the Telegram → `context_id` mapping for the current chat, starting a fresh Agent Zero session. The session is otherwise **always preserved** across messages and container restarts (stored in `TELEGRAM_CONTEXTS_FILE`).
 
 ## Security
 
