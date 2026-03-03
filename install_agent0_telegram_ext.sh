@@ -224,12 +224,102 @@ copy_optional_if_present "$SRC_DIR/.env" "$AGENT0_ROOT/.env.telegram_example"
 printf '%s\n' "$EXT_VERSION" > "$AGENT0_ROOT/TELEGRAM_EXT_VERSION"
 log "version marker: $AGENT0_ROOT/TELEGRAM_EXT_VERSION"
 
+# ---------------------------------------------------------------------------
+# Launch the Telegram bridge as a standalone daemon process.
+# This ensures the inbound long-poll loop starts immediately at every boot,
+# without waiting for an agent_init hook to fire (which requires a user msg).
+# ---------------------------------------------------------------------------
+BRIDGE_SCRIPT="$EXT_DIR/agent_init/_60_telegram_bridge.py"
+BRIDGE_PID_FILE="${TELEGRAM_BRIDGE_PID_FILE:-/a0/tmp/telegram_bridge.pid}"
+BRIDGE_LOG_FILE="${TELEGRAM_BRIDGE_LOG_FILE:-/a0/tmp/telegram_bridge.log}"
+# Allow opting out via env var (set to "false" to disable daemon launch)
+TELEGRAM_LAUNCH_DAEMON="${TELEGRAM_LAUNCH_DAEMON:-true}"
+
+_stop_existing_daemon() {
+  if [[ ! -f "$BRIDGE_PID_FILE" ]]; then
+    return 0
+  fi
+  local old_pid
+  old_pid="$(cat "$BRIDGE_PID_FILE" 2>/dev/null || true)"
+  if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+    log "Stopping existing bridge daemon (PID=$old_pid)..."
+    kill "$old_pid" 2>/dev/null || true
+    # Wait up to 3 seconds for it to exit cleanly
+    local i
+    for i in 1 2 3; do
+      sleep 1
+      if ! kill -0 "$old_pid" 2>/dev/null; then
+        break
+      fi
+    done
+    if kill -0 "$old_pid" 2>/dev/null; then
+      kill -9 "$old_pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$BRIDGE_PID_FILE"
+}
+
+_launch_bridge_daemon() {
+  case "${TELEGRAM_LAUNCH_DAEMON,,}" in
+    0|false|no|off)
+      log "Bridge daemon launch disabled (TELEGRAM_LAUNCH_DAEMON=$TELEGRAM_LAUNCH_DAEMON)"
+      return 0
+      ;;
+  esac
+
+  if [[ ! -f "$BRIDGE_SCRIPT" ]]; then
+    warn "Bridge script not found, skipping daemon launch: $BRIDGE_SCRIPT"
+    return 0
+  fi
+
+  local python_bin
+  python_bin="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+  if [[ -z "$python_bin" ]]; then
+    warn "python3 not found in PATH, cannot launch bridge daemon"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$BRIDGE_PID_FILE")" "$(dirname "$BRIDGE_LOG_FILE")"
+
+  _stop_existing_daemon
+
+  log "Launching Telegram bridge daemon ($python_bin)..."
+  nohup "$python_bin" "$BRIDGE_SCRIPT" >> "$BRIDGE_LOG_FILE" 2>&1 &
+  local new_pid=$!
+  printf '%s\n' "$new_pid" > "$BRIDGE_PID_FILE"
+
+  # Brief check: give it 2 seconds to start (or fail immediately)
+  sleep 2
+  if kill -0 "$new_pid" 2>/dev/null; then
+    log "Bridge daemon started (PID=$new_pid, log=$BRIDGE_LOG_FILE)"
+  else
+    warn "Bridge daemon exited immediately (PID=$new_pid) — check $BRIDGE_LOG_FILE for errors"
+    rm -f "$BRIDGE_PID_FILE"
+  fi
+}
+
+_launch_bridge_daemon
+
+# Summary for bridge daemon status line
+_bridge_daemon_status="disabled (TELEGRAM_LAUNCH_DAEMON=${TELEGRAM_LAUNCH_DAEMON})"
+case "${TELEGRAM_LAUNCH_DAEMON,,}" in
+  0|false|no|off) ;;
+  *)
+    if [[ -f "$BRIDGE_PID_FILE" ]]; then
+      _bridge_daemon_status="running (PID=$(cat "$BRIDGE_PID_FILE"), log=$BRIDGE_LOG_FILE)"
+    else
+      _bridge_daemon_status="FAILED to start — see $BRIDGE_LOG_FILE"
+    fi
+    ;;
+esac
+
 cat <<EOF
 ✅ Telegram extension installed (startup-safe)
 
 Root Agent0:     $AGENT0_ROOT
 Addon source:    $SRC_DIR
 Extension ver:   $EXT_VERSION
+Bridge daemon:   $_bridge_daemon_status
 
 Summary:
 - installed: $installed_count
@@ -239,6 +329,8 @@ Summary:
 
 Note:
 - Idempotent script: safe to run at every container startup.
+- The bridge daemon is launched directly at install time — no web message required to activate it.
+- Bridge log: $BRIDGE_LOG_FILE  PID file: $BRIDGE_PID_FILE
 - On startup it tries to update the local repository (git pull --ff-only) before copying files.
 - If git pull fails due to local changes, default behavior is auto-repair (git reset --hard && git clean -fd) and retry.
 - Configure required secrets (TELEGRAM_TOKEN, CHAT_ID, AGENT_ZERO_API_KEY) in Agent Zero.

@@ -60,6 +60,9 @@ Opzionali:
 - `TELEGRAM_CONFLICT_MAX_RETRIES` (default `12`, `0` = infinito)
 - `TELEGRAM_NOTIFY_PREFIX`
 - `TELEGRAM_DEBUG` (`true/false`, default `false`)
+- `TELEGRAM_LAUNCH_DAEMON` (default `true`; se `true` l'installer avvia il bridge come processo daemon al boot)
+- `TELEGRAM_BRIDGE_PID_FILE` (default `/a0/tmp/telegram_bridge.pid`)
+- `TELEGRAM_BRIDGE_LOG_FILE` (default `/a0/tmp/telegram_bridge.log`)
 
 > Nota: `CHAT_ID` per un canale Telegram in genere è numerico e inizia con `-100...`.
 
@@ -108,7 +111,16 @@ Version diagnostics:
 - The installer reads `VERSION` from the addon source and writes `/a0/TELEGRAM_EXT_VERSION`.
 - Bridge startup logs include the loaded version, e.g.:
   - `[telegram-bridge] Module loaded (version=...)`
+  - `[telegram-bridge] Standalone daemon running (version=...)  PID=<pid>`
   - `[telegram-bridge] Extension initialized (..., version=...)`
+
+Daemon launch note:
+
+- By default (`TELEGRAM_LAUNCH_DAEMON=true`) the installer starts the bridge as a **standalone background process** immediately after copying files.
+- This means the bridge is active **from the very first boot**, without waiting for a web UI message to trigger `agent_init`.
+- The daemon's stdout/stderr is written to `TELEGRAM_BRIDGE_LOG_FILE` (default `/a0/tmp/telegram_bridge.log`).
+- The daemon's PID is saved to `TELEGRAM_BRIDGE_PID_FILE` (default `/a0/tmp/telegram_bridge.pid`).
+- On every reinstall, any existing daemon is stopped and a fresh one is started.
 
 Important bootstrap note:
 
@@ -127,11 +139,12 @@ Inbound update types:
 
 ## Flusso operativo
 
-1. L’estensione `agent_init` avvia il loop Telegram long polling.
-2. Ogni messaggio testuale ricevuto viene inoltrato a `/api_message`.
-3. Agent Zero risponde normalmente.
-4. Con default `TELEGRAM_REPLY_VIA_BRIDGE=true`, la risposta viene inviata alla stessa chat Telegram che ha scritto il messaggio.
-5. `response_stream` + `message_loop_end` sono usati solo se abiliti `TELEGRAM_ENABLE_GLOBAL_NOTIFY=true`.
+1. L'installer avvia il bridge come **daemon standalone** (`nohup python3 _60_telegram_bridge.py`) immediatamente dopo l'installazione.
+2. Il daemon avvia il loop Telegram long polling **senza attendere** un messaggio dalla web UI.
+3. Ogni messaggio testuale ricevuto viene inoltrato a `/api_message`.
+4. Agent Zero risponde normalmente.
+5. Con default `TELEGRAM_REPLY_VIA_BRIDGE=true`, la risposta viene inviata alla stessa chat Telegram che ha scritto il messaggio.
+6. `response_stream` + `message_loop_end` sono usati solo se abiliti `TELEGRAM_ENABLE_GLOBAL_NOTIFY=true`.
 
 ## Separazione canali (consigliata)
 
@@ -189,12 +202,16 @@ Con le ultime patch, anche le estensioni outbound (`response_stream` e `message_
 
 Accepted initialization logs include:
 
+- `[telegram-bridge] Standalone daemon running (version=X.Y.Z)  PID=<pid>` ← daemon mode (new)
 - `[telegram-bridge] Extension initialized (reason=agent_init)`
 - `[telegram-bridge] Extension initialized (reason=module_import)`
 - `[telegram-bridge] Extension initialized (reason=response_stream_import)`
 - `[telegram-bridge] Extension initialized (reason=message_loop_end_import)`
 
-If you do **not** see `[telegram-bridge] Extension initialized` at startup, the `agent_init` hook is not executing correctly and inbound Telegram will not work.
+With `TELEGRAM_LAUNCH_DAEMON=true` (default), the installer summary shows `Bridge daemon: running (PID=..., log=...)`.  
+If the daemon fails to start, check `/a0/tmp/telegram_bridge.log`.
+
+If you do **not** see any bridge init log, check the daemon log file directly: `cat /a0/tmp/telegram_bridge.log`
 
 Se trovi il log:
 

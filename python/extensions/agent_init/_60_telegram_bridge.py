@@ -771,3 +771,23 @@ try:
     _bootstrap_inbound_worker(reason="module_import", agent=None)
 except Exception as _bootstrap_exc:
     print(f"[telegram-bridge] Bootstrap error on module import: {_bootstrap_exc}")
+
+
+if __name__ == "__main__":
+    # Standalone daemon mode: launched directly by the installer as a background process.
+    # The module-level _bootstrap_inbound_worker() above already started the polling thread.
+    # This block simply keeps the process alive so daemon threads continue running.
+    import signal as _signal
+
+    _stop = threading.Event()
+
+    def _handle_signal(signum: int, frame: Any) -> None:
+        print(f"[telegram-bridge] Received signal {signum}, shutting down...")
+        _stop.set()
+
+    _signal.signal(_signal.SIGTERM, _handle_signal)
+    _signal.signal(_signal.SIGINT, _handle_signal)
+
+    print(f"[telegram-bridge] Standalone daemon running (version={EXT_VERSION})  PID={os.getpid()}")
+    _stop.wait()
+    print("[telegram-bridge] Standalone daemon exiting.")
