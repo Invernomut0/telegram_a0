@@ -1,54 +1,54 @@
 # Agent Zero Telegram Extension
 
-Estensione custom per Agent Zero che abilita integrazione Telegram bidirezionale:
+Custom extension for Agent Zero enabling bidirectional Telegram integration:
 
-- **Inbound**: messaggi ricevuti dal bot Telegram vengono inoltrati ad Agent Zero (`/api_message`).
-- **Outbound**: risposte finali di Agent Zero vengono inviate su Telegram (`CHAT_ID`).
-- **Notifiche**: qualsiasi risposta finale dell’agente (anche non originata da Telegram) può essere notificata sul canale/chat configurato.
+- **Inbound**: messages received by the Telegram bot are forwarded to Agent Zero (`/api_message`).
+- **Outbound**: Agent Zero's final responses are sent to Telegram (`CHAT_ID`).
+- **Notifications**: any final agent response (including those not originating from Telegram) can be pushed to the configured channel/chat.
 
-## Struttura file
+## File Structure
 
 - `python/extensions/agent_init/_60_telegram_bridge.py`  
-  Avvia un worker in background che usa long polling Telegram e inoltra i messaggi ad Agent Zero.
+  Starts a background worker that long-polls Telegram and forwards messages to Agent Zero.
 - `python/extensions/response_stream/_60_telegram_capture_response.py`  
-  Intercetta i payload di risposta (tool call) e salva il testo finale da notificare.
+  Intercepts streamed response payloads and progressively updates the Telegram placeholder message.
 - `python/extensions/message_loop_end/_60_telegram_notify.py`  
-  Pubblica su Telegram la risposta finale catturata.
+  Publishes the captured final response to Telegram (opt-in via `TELEGRAM_ENABLE_GLOBAL_NOTIFY`).
 - `.env`  
-  Esempio variabili ambiente/segreti.
+  Example environment variables / secrets template.
 
-## Prerequisiti
+## Prerequisites
 
-1. Istanza Agent Zero attiva.
-2. Bot Telegram creato via `@BotFather`.
-3. API key Agent Zero per endpoint esterni (`X-API-KEY`).
+1. A running Agent Zero instance.
+2. A Telegram bot created via `@BotFather`.
+3. An Agent Zero API key for external endpoints (`X-API-KEY`).
 
-## Configurazione segreti
+## Secret Configuration
 
-Nel tuo Agent Zero (Settings → Secrets) imposta almeno:
+In your Agent Zero (Settings → Secrets) set at least:
 
 - `TELEGRAM_TOKEN`
 - `CHAT_ID`
 - `AGENT_ZERO_API_KEY`
 
-L'estensione prova prima `os.environ`, poi fallback su file secrets Agent0:
+The extension first checks `os.environ`, then falls back to the Agent Zero secrets file:
 
 - default: `/a0/usr/secrets.env`
 - override: `AGENT_ZERO_SECRETS_FILE=/custom/path/secrets.env`
 
-Alias supportati:
+Supported aliases:
 
-- `TELEGRAM_TOKEN` oppure `TELEGRAM_BOT_TOKEN`
-- `AGENT_ZERO_API_KEY` oppure `API_KEY` oppure `A0_API_KEY`
-- `CHAT_ID` oppure `TELEGRAM_CHAT_ID`
+- `TELEGRAM_TOKEN` or `TELEGRAM_BOT_TOKEN`
+- `AGENT_ZERO_API_KEY` or `API_KEY` or `A0_API_KEY`
+- `CHAT_ID` or `TELEGRAM_CHAT_ID`
 
-Opzionali:
+Optional variables:
 
 - `AGENT_ZERO_URL` (default `http://localhost:80`)
-- `TELEGRAM_ALLOWED_CHAT_IDS` (lista separata da virgole; se vuoto accetta tutte le chat inbound)
-- `TELEGRAM_USE_CHAT_ID_AS_ALLOWED` (default `false`; se `true`, quando `TELEGRAM_ALLOWED_CHAT_IDS` è vuoto usa `CHAT_ID` come filtro inbound)
-- `TELEGRAM_REPLY_VIA_BRIDGE` (default `true`; risponde in Telegram direttamente dal bridge inbound)
-- `TELEGRAM_ENABLE_GLOBAL_NOTIFY` (default `false`; inoltra su `CHAT_ID` tutte le risposte Agent0, inclusa UI web)
+- `TELEGRAM_ALLOWED_CHAT_IDS` (comma-separated list; if empty, all inbound chats are accepted)
+- `TELEGRAM_USE_CHAT_ID_AS_ALLOWED` (default `false`; if `true`, uses `CHAT_ID` as inbound allowlist when `TELEGRAM_ALLOWED_CHAT_IDS` is empty)
+- `TELEGRAM_REPLY_VIA_BRIDGE` (default `true`; reply to Telegram directly from the inbound bridge)
+- `TELEGRAM_ENABLE_GLOBAL_NOTIFY` (default `false`; forward all Agent Zero responses — including web UI — to `CHAT_ID`)
 - `TELEGRAM_DEFAULT_PROJECT`
 - `TELEGRAM_POLL_INTERVAL_SEC`
 - `TELEGRAM_LONG_POLL_TIMEOUT_SEC`
@@ -57,52 +57,52 @@ Opzionali:
 - `TELEGRAM_POLL_LOCK_FILE` (default `/a0/tmp/telegram_poll.lock`)
 - `TELEGRAM_AUTO_DELETE_WEBHOOK_ON_CONFLICT` (default `true`)
 - `TELEGRAM_CONFLICT_BACKOFF_SEC` (default `10`)
-- `TELEGRAM_CONFLICT_MAX_RETRIES` (default `12`, `0` = infinito)
+- `TELEGRAM_CONFLICT_MAX_RETRIES` (default `12`, `0` = unlimited)
 - `TELEGRAM_NOTIFY_PREFIX`
 - `TELEGRAM_DEBUG` (`true/false`, default `false`)
-- `TELEGRAM_LAUNCH_DAEMON` (default `true`; se `true` l'installer avvia il bridge come processo daemon al boot)
+- `TELEGRAM_LAUNCH_DAEMON` (default `true`; if `true` the installer starts the bridge as a daemon process at boot)
 - `TELEGRAM_BRIDGE_PID_FILE` (default `/a0/tmp/telegram_bridge.pid`)
 - `TELEGRAM_BRIDGE_LOG_FILE` (default `/a0/tmp/telegram_bridge.log`)
 
-> Nota: `CHAT_ID` per un canale Telegram in genere è numerico e inizia con `-100...`.
+> Note: `CHAT_ID` for a Telegram channel is typically numeric and starts with `-100...`.
 
-## Installazione
+## Installation
 
-Copia i file in una root Agent Zero mantenendo i path, ad esempio:
+Copy the files into an Agent Zero root, preserving the paths, for example:
 
 - `/a0/python/extensions/agent_init/_60_telegram_bridge.py`
 - `/a0/python/extensions/response_stream/_60_telegram_capture_response.py`
 - `/a0/python/extensions/message_loop_end/_60_telegram_notify.py`
 
-Poi riavvia Agent Zero/container.
+Then restart Agent Zero / the container.
 
-## Installazione startup-safe con persistenza in `/a0/usr`
+## Startup-safe Installation with `/a0/usr` Persistence
 
-Se la tua installazione persiste solo `/a0/usr`, usa questo pattern:
+If your setup only persists `/a0/usr`, use this pattern:
 
-1. Mantieni il repository addon in area persistente, ad esempio `/a0/usr/telegram_a0`.
-2. Salva i secrets in `/a0/usr/secrets.env` (oppure nel sistema Secrets di Agent Zero).
-3. Esegui ad ogni avvio container:
+1. Keep the addon repository in a persistent area, e.g. `/a0/usr/telegram_a0`.
+2. Store secrets in `/a0/usr/secrets.env` (or in Agent Zero's Secrets system).
+3. Run at every container startup:
   - `/a0/usr/telegram_a0/install_agent0_telegram_ext.sh /a0`
 
-Lo script è **idempotente** e quindi sicuro al bootstrap:
+The script is **idempotent** and therefore safe at bootstrap:
 
-- prova ad aggiornare il repository locale con `git pull --ff-only` prima della copia file;
-- se il pull fallisce per modifiche locali, prova automaticamente `git reset --hard` + `git clean -fd` e ritenta il pull;
-- evita overwrite inutili (copia solo se i file cambiano)
-- supporta lock anti-concorrenza (se `flock` è disponibile)
-- non fallisce per file opzionali mancanti (`README.md`, `TODO.md`, `.env`)
-- se `git pull` fallisce, continua usando i file locali già presenti (fail-safe)
+- tries to update the local repository with `git pull --ff-only` before copying files;
+- if the pull fails due to local changes, automatically runs `git reset --hard` + `git clean -fd` and retries;
+- skips unnecessary overwrites (copies only when files change);
+- supports concurrency lock (when `flock` is available);
+- does not fail for missing optional files (`README.md`, `TODO.md`, `.env`);
+- if `git pull` fails, continues with locally available files (fail-safe).
 
-Variabili utili per bootstrap avanzato:
+Advanced bootstrap variables:
 
 - `AGENT0_ROOT` (default `/a0`)
-- `SOURCE_DIR` (default directory dello script)
+- `SOURCE_DIR` (default: script directory)
 - `A0_TELEGRAM_INSTALL_LOCK_FILE` (default `/tmp/agent0_telegram_ext_install.lock`)
 - `A0_TELEGRAM_AUTO_UPDATE_REPO` (default `true`)
 - `A0_TELEGRAM_GIT_REMOTE` (default `origin`)
-- `A0_TELEGRAM_GIT_BRANCH` (default branch tracciato localmente)
-- `A0_TELEGRAM_GIT_AUTO_REPAIR_LOCAL_CHANGES` (default `true`, per disabilitare auto `reset/clean`)
+- `A0_TELEGRAM_GIT_BRANCH` (default: locally tracked branch)
+- `A0_TELEGRAM_GIT_AUTO_REPAIR_LOCAL_CHANGES` (default `true`; set to `false` to disable auto `reset/clean`)
 - `A0_TELEGRAM_GIT_AUTO_RESTORE_TRACKED_FILES` (default `true`, restores changed tracked files before/after pull)
 - `A0_TELEGRAM_GIT_RESTORE_FILES` (default `install_agent0_telegram_ext.sh`, space-separated tracked files)
 
@@ -137,62 +137,62 @@ Inbound update types:
 - This helps when the bot is used in channels where updates arrive as `channel_post` instead of `message`.
 - The bridge also includes a module-import fallback bootstrap, so inbound polling can start even if `agent_init` is not invoked in a specific runtime.
 
-## Flusso operativo
+## How It Works
 
-1. L'installer avvia il bridge come **daemon standalone** (`nohup python3 _60_telegram_bridge.py`) immediatamente dopo l'installazione.
-2. Il daemon avvia il loop Telegram long polling **senza attendere** un messaggio dalla web UI.
-3. Ogni messaggio testuale ricevuto viene inoltrato a `/api_message`.
-4. Agent Zero risponde normalmente.
-5. Con default `TELEGRAM_REPLY_VIA_BRIDGE=true`, la risposta viene inviata alla stessa chat Telegram che ha scritto il messaggio.
-6. `response_stream` + `message_loop_end` sono usati solo se abiliti `TELEGRAM_ENABLE_GLOBAL_NOTIFY=true`.
+1. The installer starts the bridge as a **standalone daemon** (`nohup python3 _60_telegram_bridge.py`) immediately after copying files.
+2. The daemon starts the Telegram long-polling loop **without waiting** for a web UI message.
+3. Every received text message is forwarded to `/api_message`.
+4. Agent Zero responds normally.
+5. With the default `TELEGRAM_REPLY_VIA_BRIDGE=true`, the response is sent back to the same Telegram chat that sent the message.
+6. `response_stream` + `message_loop_end` are used only when `TELEGRAM_ENABLE_GLOBAL_NOTIFY=true` is set.
 
-## Separazione canali (consigliata)
+## Channel Separation (Recommended)
 
-Per avere canali indipendenti:
+For independent channels:
 
-- Messaggi da **web UI**: restano solo in web UI (non inoltrati a Telegram)
-- Messaggi da **Telegram**: risposta solo su Telegram (stessa chat)
+- Messages from the **web UI**: stay in the web UI only (not forwarded to Telegram).
+- Messages from **Telegram**: reply goes only to Telegram (same chat).
 
-Configura:
+Set:
 
 - `TELEGRAM_REPLY_VIA_BRIDGE=true`
 - `TELEGRAM_ENABLE_GLOBAL_NOTIFY=false`
 
-## Comandi Telegram supportati
+## Supported Telegram Commands
 
-- `/start` o `/help`: conferma bridge attivo.
-- `/reset`: resetta il context mapping Telegram→`context_id`.
+- `/start` or `/help`: confirms the bridge is active.
+- `/reset`: resets the Telegram → `context_id` mapping.
 
-## Sicurezza
+## Security
 
-- Usa sempre i **Secrets** di Agent Zero per token e chiavi.
-- Limita gli ingressi con `TELEGRAM_ALLOWED_CHAT_IDS` se vuoi accettare solo chat specifiche.
+- Always use Agent Zero **Secrets** for tokens and keys.
+- Restrict inbound access with `TELEGRAM_ALLOWED_CHAT_IDS` if you want to accept only specific chats.
 
-## Debug rapido
+## Quick Debug
 
-- Se non arrivano messaggi inbound, verifica `TELEGRAM_TOKEN`.
-- Se inbound arriva ma Agent Zero non risponde, verifica `AGENT_ZERO_API_KEY` e `AGENT_ZERO_URL`.
-- Se Agent Zero risponde ma Telegram non riceve, verifica `CHAT_ID` e permessi del bot nel canale/chat.
+- If inbound messages are not arriving, check `TELEGRAM_TOKEN`.
+- If inbound arrives but Agent Zero does not respond, check `AGENT_ZERO_API_KEY` and `AGENT_ZERO_URL`.
+- If Agent Zero responds but Telegram does not receive the reply, check `CHAT_ID` and bot permissions in the channel/chat.
 
-Importante: `CHAT_ID` è usato per l'**outbound** (dove inviare notifiche). Non filtra l'inbound a meno che non abiliti esplicitamente `TELEGRAM_USE_CHAT_ID_AS_ALLOWED=true`.
+Note: `CHAT_ID` is used for **outbound** delivery (where to send notifications). It does not filter inbound unless you explicitly set `TELEGRAM_USE_CHAT_ID_AS_ALLOWED=true`.
 
-### Debug verboso consigliato
+### Verbose Debug
 
-Imposta in Secrets:
+Set in Secrets:
 
 - `TELEGRAM_DEBUG=true`
 
-Con questo flag vedrai nei log:
+With this flag the logs will show:
 
-- stato variabili all'avvio (`TELEGRAM_TOKEN`, `AGENT_ZERO_API_KEY`, `AGENT_ZERO_URL`)
-- numero update ricevuti da `getUpdates`
-- motivi di skip (chat non ammessa, payload vuoto, ecc.)
-- esito inoltro a `/api_message`
-- esito invio `sendMessage`
+- variable state at startup (`TELEGRAM_TOKEN`, `AGENT_ZERO_API_KEY`, `AGENT_ZERO_URL`)
+- number of updates returned by `getUpdates`
+- skip reasons (unauthorized chat, empty payload, etc.)
+- result of forwarding to `/api_message`
+- result of `sendMessage`
 
-Con le ultime patch, anche le estensioni outbound (`response_stream` e `message_loop_end`) leggono i secrets sia da `os.environ` sia da file (`/a0/usr/secrets.env`), allineandosi al bridge inbound.
+The outbound extensions (`response_stream` and `message_loop_end`) also read secrets from both `os.environ` and the file (`/a0/usr/secrets.env`), consistent with the inbound bridge.
 
-### Log utili da cercare
+### Useful Log Lines
 
 - `[telegram-bridge] Inbound worker started`
 - `[telegram-bridge][debug] forwarding to Agent0 -> target_urls=[...]`
@@ -213,42 +213,42 @@ If the daemon fails to start, check `/a0/tmp/telegram_bridge.log`.
 
 If you do **not** see any bridge init log, check the daemon log file directly: `cat /a0/tmp/telegram_bridge.log`
 
-Se trovi il log:
+If you see the log line:
 
 - `[telegram-bridge] Skipping startup: missing TELEGRAM_TOKEN or AGENT_ZERO_API_KEY`
 
-significa che **il bridge inbound è disabilitato**. In quel caso non leggerà Telegram finché non imposti entrambe le variabili.
+it means the **inbound bridge is disabled**. It will not poll Telegram until both variables are set.
 
-### Errore polling `HTTP 409: Conflict`
+### Polling Error `HTTP 409: Conflict`
 
-Il bridge ora gestisce automaticamente i conflitti più comuni su `getUpdates`:
+The bridge automatically handles the most common `getUpdates` conflicts:
 
-- prova a rimuovere un eventuale webhook attivo (`deleteWebhook`), perché Telegram non permette webhook e polling insieme;
-- applica un backoff configurabile prima di riprovare;
-- usa un lock file locale per evitare doppio poller nello stesso host/container.
-- può fermare il polling inbound dopo N conflitti consecutivi (`TELEGRAM_CONFLICT_MAX_RETRIES`) per evitare loop rumorosi.
+- tries to remove any active webhook (`deleteWebhook`), because Telegram does not allow webhook and polling simultaneously;
+- applies a configurable backoff before retrying;
+- uses a local lock file to prevent a double poller on the same host/container;
+- can stop inbound polling after N consecutive conflicts (`TELEGRAM_CONFLICT_MAX_RETRIES`) to avoid noisy loops.
 
-Se il `409` continua, in genere c’è **un altro processo esterno** che usa lo stesso bot token in polling. In tal caso lascia attivo un solo consumer `getUpdates` per quel token.
+If the `409` persists, there is typically **another external process** using the same bot token in polling mode. In that case, keep only one active `getUpdates` consumer per token.
 
-### Errore bootstrap: `git pull failed ... local changes would be overwritten`
+### Bootstrap Error: `git pull failed ... local changes would be overwritten`
 
-Se nei log vedi un errore simile:
+If you see a log line like:
 
 - `git pull failed ... Your local changes to the following files would be overwritten by merge`
 
-allora l'estensione **non viene aggiornata/installa** al riavvio, e potresti continuare a eseguire codice vecchio.
+the extension is **not being updated** at restart and you may be running stale code.
 
-Risoluzione (una tantum) nel container Agent Zero, sul repo persistente:
+One-time fix inside the Agent Zero container, on the persistent repo:
 
 - `git -C /a0/usr/extensions/repos/telegram_a0 reset --hard`
 - `git -C /a0/usr/extensions/repos/telegram_a0 clean -fd`
 - `git -C /a0/usr/extensions/repos/telegram_a0 pull --ff-only origin main`
 
-Poi riavvia Agent Zero/container.
+Then restart Agent Zero / the container.
 
-Nota: con la configurazione consigliata per canali separati,
+Note: with the recommended channel-separation configuration,
 
 - `TELEGRAM_ENABLE_GLOBAL_NOTIFY=false` (default)
 - `TELEGRAM_REPLY_VIA_BRIDGE=true` (default)
 
-i messaggi della web UI non vengono inoltrati su Telegram, mentre i messaggi Telegram ricevono risposta direttamente sulla stessa chat Telegram.
+web UI messages are not forwarded to Telegram, while Telegram messages receive a reply directly on the same Telegram chat.
