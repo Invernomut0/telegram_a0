@@ -112,6 +112,11 @@ Important bootstrap note:
   - `git -C /a0/usr/extensions/repos/telegram_a0 pull --ff-only origin main`
 - After that, this installer's auto-restore + auto-repair logic helps keep the repo clean across restarts.
 
+Inbound update types:
+
+- The bridge listens to both `message` and `channel_post` Telegram updates.
+- This helps when the bot is used in channels where updates arrive as `channel_post` instead of `message`.
+
 ## Flusso operativo
 
 1. L’estensione `agent_init` avvia il loop Telegram long polling.

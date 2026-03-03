@@ -8,7 +8,7 @@ Required secrets/environment variables (typically in Agent Zero secrets):
 - AGENT_ZERO_API_KEY
 
 Recommended:
-- CHAT_ID (also used as default allowed inbound chat)
+- CHAT_ID (used as outbound target for global notify when enabled)
 - AGENT_ZERO_URL (default: http://localhost:80)
 - TELEGRAM_DEBUG=true (verbose diagnostics)
 """
@@ -405,7 +405,7 @@ class TelegramInboundWorker:
     def _get_updates(self, offset: int | None) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {
             "timeout": self.cfg.long_poll_timeout_sec,
-            "allowed_updates": ["message"],
+            "allowed_updates": ["message", "channel_post"],
         }
         if offset is not None:
             payload["offset"] = offset
@@ -415,7 +415,7 @@ class TelegramInboundWorker:
         return result if isinstance(result, list) else []
 
     def _bootstrap_offset(self) -> int:
-        data = self._telegram_api("getUpdates", {"timeout": 0, "allowed_updates": ["message"]})
+        data = self._telegram_api("getUpdates", {"timeout": 0, "allowed_updates": ["message", "channel_post"]})
         result = data.get("result", [])
         if not isinstance(result, list) or not result:
             return 0
@@ -424,8 +424,9 @@ class TelegramInboundWorker:
         return max_id + 1
 
     def _handle_update(self, upd: dict[str, Any]) -> None:
-        msg = upd.get("message")
+        msg = upd.get("message") or upd.get("channel_post")
         if not isinstance(msg, dict):
+            self._debug(f"unsupported update keys={list(upd.keys())[:6]}, skipping")
             return
 
         text = (msg.get("text") or "").strip()
@@ -442,10 +443,10 @@ class TelegramInboundWorker:
         if self.cfg.allowed_chat_ids and chat_id not in self.cfg.allowed_chat_ids:
             if chat_id not in self._blocked_chat_logged:
                 print(
-                    "[telegram-bridge] inbound skipped: chat non autorizzata "
+                    "[telegram-bridge] inbound skipped: unauthorized chat "
                     f"chat_id={chat_id}. "
-                    "Imposta TELEGRAM_ALLOWED_CHAT_IDS includendo questa chat, "
-                    "oppure svuotalo per accettare tutte le chat."
+                    "Set TELEGRAM_ALLOWED_CHAT_IDS to include this chat, "
+                    "or leave it empty to accept all inbound chats."
                 )
                 self._blocked_chat_logged.add(chat_id)
             self._debug(f"chat_id={chat_id} not in allowed list, skipping")
@@ -459,13 +460,13 @@ class TelegramInboundWorker:
         self._debug(f"inbound message chat_id={chat_id} text={text[:120]!r}")
 
         if text in {"/start", "/help"}:
-            self._send_telegram(chat_id, "✅ Bridge Telegram ↔ Agent0 attivo. Scrivimi un messaggio e lo inoltro ad Agent0.")
+            self._send_telegram(chat_id, "✅ Telegram ↔ Agent0 bridge is active. Send a message and I will forward it to Agent0.")
             return
 
         if text.startswith("/reset"):
             self._contexts.pop(chat_id, None)
             self._save_contexts()
-            self._send_telegram(chat_id, "♻️ Contesto conversazione resettato.")
+            self._send_telegram(chat_id, "♻️ Conversation context has been reset.")
             return
 
         self._forward_to_agent(chat_id, text)
@@ -538,7 +539,7 @@ class TelegramInboundWorker:
             except error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="ignore")
                 self._debug(f"Agent0 HTTPError url={url} code={exc.code} body={body[:500]!r}")
-                self._send_telegram(chat_id, f"❌ Errore Agent0 HTTP {exc.code}: {body[:1200]}")
+                self._send_telegram(chat_id, f"❌ Agent0 HTTP error {exc.code}: {body[:1200]}")
                 return
             except error.URLError as exc:
                 last_connection_error = exc
@@ -546,14 +547,14 @@ class TelegramInboundWorker:
                 continue
             except Exception as exc:
                 self._debug(f"Agent0 generic error on {url}: {exc}")
-                self._send_telegram(chat_id, f"❌ Errore inoltro verso Agent0: {exc}")
+                self._send_telegram(chat_id, f"❌ Error forwarding to Agent0: {exc}")
                 return
 
-        details = str(last_connection_error) if last_connection_error else "endpoint non raggiungibile"
+        details = str(last_connection_error) if last_connection_error else "endpoint unreachable"
         self._send_telegram(
             chat_id,
-            "❌ Impossibile contattare Agent0 su nessun endpoint configurato. "
-            f"Verifica AGENT_ZERO_URL. Dettaglio: {details}",
+            "❌ Could not reach Agent0 on any configured endpoint. "
+            f"Check AGENT_ZERO_URL. Details: {details}",
         )
 
     def _build_agent_message_urls(self) -> list[str]:

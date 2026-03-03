@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Script di installazione estensione Telegram per Agent Zero
-# Startup-safe: idempotente, con lock anti-esecuzione concorrente e copie solo-se-cambiano.
+# Telegram extension installer for Agent Zero
+# Startup-safe: idempotent, with concurrency lock and copy-only-when-changed behavior.
 #
 # Usage:
 #   ./install_agent0_telegram_ext.sh [/percorso/alla/root/agentzero]
 #
-# Esempio tipico in container Agent Zero:
+# Typical example inside Agent Zero container:
 #   ./install_agent0_telegram_ext.sh /a0
 
 set -Eeuo pipefail
@@ -38,14 +38,14 @@ RESTORE_FILE_LIST="${A0_TELEGRAM_GIT_RESTORE_FILES:-install_agent0_telegram_ext.
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$LOCK_FILE"
   if ! flock -n 9; then
-    log "Un'altra installazione è in corso; skip sicuro."
+    log "Another installation is already running; safe skip."
     exit 0
   fi
 else
-  warn "'flock' non disponibile: continuo senza lock concorrente."
+  warn "'flock' not available: continuing without concurrency lock."
 fi
 
-[[ -d "$SRC_DIR" ]] || die "Directory sorgente non trovata: $SRC_DIR"
+[[ -d "$SRC_DIR" ]] || die "Source directory not found: $SRC_DIR"
 
 update_repo_if_possible() {
   local repo_dir="$1"
@@ -79,7 +79,7 @@ update_repo_if_possible() {
     local _repo="$1"
     if [[ -n "$AUTO_UPDATE_BRANCH" ]]; then
       if ! git -C "$_repo" fetch --prune "$AUTO_UPDATE_REMOTE"; then
-        warn "git fetch fallito, continuo con file locali già presenti."
+        warn "git fetch failed, continuing with existing local files."
         return 1
       fi
       git -C "$_repo" pull --ff-only "$AUTO_UPDATE_REMOTE" "$AUTO_UPDATE_BRANCH"
@@ -90,18 +90,18 @@ update_repo_if_possible() {
 
   case "${AUTO_UPDATE_REPO,,}" in
     0|false|no|off)
-      log "Auto-update repository disabilitato (A0_TELEGRAM_AUTO_UPDATE_REPO=$AUTO_UPDATE_REPO)."
+      log "Repository auto-update disabled (A0_TELEGRAM_AUTO_UPDATE_REPO=$AUTO_UPDATE_REPO)."
       return 0
       ;;
   esac
 
   if [[ ! -d "$repo_dir/.git" ]]; then
-    log "Sorgente non è un repository git locale: skip update ($repo_dir)"
+    log "Source is not a local git repository: skipping update ($repo_dir)"
     return 0
   fi
 
   if ! command -v git >/dev/null 2>&1; then
-    warn "git non disponibile: skip update repository."
+    warn "git is not available: skipping repository update."
     return 0
   fi
 
@@ -151,7 +151,7 @@ copy_if_changed() {
   local src="$1"
   local dst="$2"
 
-  [[ -f "$src" ]] || die "File sorgente mancante: $src"
+  [[ -f "$src" ]] || die "Missing source file: $src"
   mkdir -p "$(dirname "$dst")"
 
   if [[ -f "$dst" ]]; then
@@ -177,7 +177,7 @@ copy_optional_if_present() {
 
   if [[ ! -f "$src" ]]; then
     skipped_count=$((skipped_count + 1))
-    log "optional missing, skip: $src"
+    log "optional file missing, skip: $src"
     return 0
   fi
 
@@ -186,7 +186,7 @@ copy_optional_if_present() {
 
 mkdir -p "$EXT_DIR/agent_init" "$EXT_DIR/response_stream" "$EXT_DIR/message_loop_end"
 
-# Copia estensioni core (obbligatorie)
+# Copy core extensions (required)
 copy_if_changed \
   "$SRC_DIR/python/extensions/agent_init/_60_telegram_bridge.py" \
   "$EXT_DIR/agent_init/_60_telegram_bridge.py"
@@ -199,27 +199,27 @@ copy_if_changed \
   "$SRC_DIR/python/extensions/message_loop_end/_60_telegram_notify.py" \
   "$EXT_DIR/message_loop_end/_60_telegram_notify.py"
 
-# File di riferimento (opzionali)
+# Reference files (optional)
 copy_optional_if_present "$SRC_DIR/README.md" "$AGENT0_ROOT/README_TELEGRAM_EXT.md"
 copy_optional_if_present "$SRC_DIR/TODO.md" "$AGENT0_ROOT/TODO_TELEGRAM_EXT.md"
 copy_optional_if_present "$SRC_DIR/.env" "$AGENT0_ROOT/.env.telegram_example"
 
 cat <<EOF
-✅ Estensione Telegram installata (startup-safe)
+✅ Telegram extension installed (startup-safe)
 
 Root Agent0:     $AGENT0_ROOT
 Sorgente addon:  $SRC_DIR
 
-Riepilogo:
+Summary:
 - installed: $installed_count
 - updated:   $updated_count
 - unchanged: $unchanged_count
 - skipped:   $skipped_count
 
 Note:
-- Script idempotente: puoi lanciarlo ad ogni startup container.
-- All'avvio prova ad aggiornare il repository locale (`git pull --ff-only`) prima della copia file.
-- Se `git pull` fallisce per modifiche locali, per default prova auto-repair (`git reset --hard && git clean -fd`) e ritenta.
-- Configura i secrets richiesti (TELEGRAM_TOKEN, CHAT_ID, AGENT_ZERO_API_KEY) in Agent Zero.
-- Per dettagli e troubleshooting consulta: $AGENT0_ROOT/README_TELEGRAM_EXT.md
+- Idempotent script: safe to run at every container startup.
+- On startup it tries to update the local repository (git pull --ff-only) before copying files.
+- If git pull fails due to local changes, default behavior is auto-repair (git reset --hard && git clean -fd) and retry.
+- Configure required secrets (TELEGRAM_TOKEN, CHAT_ID, AGENT_ZERO_API_KEY) in Agent Zero.
+- For details and troubleshooting see: $AGENT0_ROOT/README_TELEGRAM_EXT.md
 EOF
