@@ -15,6 +15,7 @@
 
 ## Done
 
+- [x] **Owner:** Copilot — **Task:** Fixed root-agent detection across all Telegram extensions to handle `agent.number` as int or string (prevents silent hook skip) — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Fixed installer output command-substitution side effect in final notes and normalized key installer logs/messages to English — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Added inbound support for Telegram `channel_post` updates and improved unsupported-update diagnostics — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Added installer self-heal to auto-restore tracked files (default: `install_agent0_telegram_ext.sh`) before/after pull + documented bootstrap pull ordering limitation — **Date:** 2026-03-03

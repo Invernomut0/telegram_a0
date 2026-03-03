@@ -84,8 +84,16 @@ def _as_bool(value: str, default: bool = False) -> bool:
 class TelegramNotifyExtension(Extension):
     _warned_missing_config = False
 
+    @staticmethod
+    def _is_root_agent(agent: Any) -> bool:
+        raw_number = getattr(agent, "number", 0)
+        try:
+            return int(raw_number) == 0
+        except Exception:
+            return str(raw_number).strip() == "0"
+
     async def execute(self, loop_data=None, **kwargs) -> Any:
-        if getattr(self.agent, "number", 0) != 0:
+        if not self._is_root_agent(self.agent):
             return None
 
         env_data = dict(os.environ)

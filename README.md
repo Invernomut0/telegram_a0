@@ -179,6 +179,8 @@ Con le ultime patch, anche le estensioni outbound (`response_stream` e `message_
 - `[telegram-notify] skip notify: missing config -> ...`
 - `[telegram-notify][debug] sendMessage success`
 
+If you do **not** see `[telegram-bridge] Extension initialized` at startup, the `agent_init` hook is not executing correctly and inbound Telegram will not work.
+
 Se trovi il log:
 
 - `[telegram-bridge] Skipping startup: missing TELEGRAM_TOKEN or AGENT_ZERO_API_KEY`

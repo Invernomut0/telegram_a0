@@ -664,9 +664,17 @@ class TelegramBridgeExtension(Extension):
     _started = False
     _start_lock = threading.Lock()
 
+    @staticmethod
+    def _is_root_agent(agent: Any) -> bool:
+        raw_number = getattr(agent, "number", 0)
+        try:
+            return int(raw_number) == 0
+        except Exception:
+            return str(raw_number).strip() == "0"
+
     async def execute(self, **kwargs) -> Any:
         # Start only once, on top-level agent.
-        if getattr(self.agent, "number", 0) != 0:
+        if not self._is_root_agent(self.agent):
             return None
 
         with TelegramBridgeExtension._start_lock:

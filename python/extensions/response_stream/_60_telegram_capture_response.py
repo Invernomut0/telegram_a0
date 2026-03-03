@@ -19,8 +19,16 @@ except Exception:  # pragma: no cover - local fallback outside Agent Zero runtim
 
 
 class TelegramCaptureResponseExtension(Extension):
+    @staticmethod
+    def _is_root_agent(agent: Any) -> bool:
+        raw_number = getattr(agent, "number", 0)
+        try:
+            return int(raw_number) == 0
+        except Exception:
+            return str(raw_number).strip() == "0"
+
     async def execute(self, parsed: dict[str, Any] | None = None, **kwargs) -> Any:
-        if getattr(self.agent, "number", 0) != 0:
+        if not self._is_root_agent(self.agent):
             return None
 
         env_data = dict(os.environ)
