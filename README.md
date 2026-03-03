@@ -51,6 +51,9 @@ Opzionali:
 - `TELEGRAM_LONG_POLL_TIMEOUT_SEC`
 - `TELEGRAM_CONTEXT_LIFETIME_HOURS`
 - `TELEGRAM_SKIP_OLD_UPDATES`
+- `TELEGRAM_POLL_LOCK_FILE` (default `/a0/tmp/telegram_poll.lock`)
+- `TELEGRAM_AUTO_DELETE_WEBHOOK_ON_CONFLICT` (default `true`)
+- `TELEGRAM_CONFLICT_BACKOFF_SEC` (default `10`)
 - `TELEGRAM_NOTIFY_PREFIX`
 - `TELEGRAM_DEBUG` (`true/false`, default `false`)
 
@@ -129,3 +132,13 @@ Se trovi il log:
 - `[telegram-bridge] Skipping startup: missing TELEGRAM_TOKEN or AGENT_ZERO_API_KEY`
 
 significa che **il bridge inbound è disabilitato**. In quel caso non leggerà Telegram finché non imposti entrambe le variabili.
+
+### Errore polling `HTTP 409: Conflict`
+
+Il bridge ora gestisce automaticamente i conflitti più comuni su `getUpdates`:
+
+- prova a rimuovere un eventuale webhook attivo (`deleteWebhook`), perché Telegram non permette webhook e polling insieme;
+- applica un backoff configurabile prima di riprovare;
+- usa un lock file locale per evitare doppio poller nello stesso host/container.
+
+Se il `409` continua, in genere c’è **un altro processo esterno** che usa lo stesso bot token in polling. In tal caso lascia attivo un solo consumer `getUpdates` per quel token.

@@ -19,10 +19,16 @@ import json
 import os
 import threading
 import time
+import errno
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 from urllib import error, request
+
+try:
+    import fcntl
+except Exception:  # pragma: no cover - non-posix fallback
+    fcntl = None  # type: ignore[assignment]
 
 try:
     from python.helpers.extension import Extension  # pyright: ignore[reportMissingImports]
@@ -120,6 +126,9 @@ class TelegramBridgeConfig:
         skip_old_updates_on_start: bool,
         offset_file: str,
         contexts_file: str,
+        lock_file: str,
+        auto_delete_webhook_on_conflict: bool,
+        conflict_backoff_sec: int,
         debug: bool,
         secrets_file: str,
     ):
@@ -134,6 +143,9 @@ class TelegramBridgeConfig:
         self.skip_old_updates_on_start = skip_old_updates_on_start
         self.offset_file = offset_file
         self.contexts_file = contexts_file
+        self.lock_file = lock_file
+        self.auto_delete_webhook_on_conflict = auto_delete_webhook_on_conflict
+        self.conflict_backoff_sec = conflict_backoff_sec
         self.debug = debug
         self.secrets_file = secrets_file
 
@@ -182,6 +194,15 @@ class TelegramBridgeConfig:
             skip_old_updates_on_start=_as_bool(_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_SKIP_OLD_UPDATES",)) or "true", True),
             offset_file=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_OFFSET_FILE",)) or "/a0/tmp/telegram_offset.txt",
             contexts_file=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_CONTEXTS_FILE",)) or "/a0/tmp/telegram_contexts.json",
+            lock_file=_resolve_secret(env_data, secrets_data, keys=("TELEGRAM_POLL_LOCK_FILE",)) or "/a0/tmp/telegram_poll.lock",
+            auto_delete_webhook_on_conflict=_as_bool(
+                _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_AUTO_DELETE_WEBHOOK_ON_CONFLICT",)) or "true",
+                True,
+            ),
+            conflict_backoff_sec=_safe_int(
+                _resolve_secret(env_data, secrets_data, keys=("TELEGRAM_CONFLICT_BACKOFF_SEC",)) or "10",
+                10,
+            ),
             debug=debug,
             secrets_file=secrets_file,
         )
@@ -193,6 +214,7 @@ class TelegramInboundWorker:
         self._running = True
         self._lock = threading.Lock()
         self._contexts: dict[str, str] = self._load_contexts()
+        self._poll_lock_handle: Any | None = None
 
     def _debug(self, message: str) -> None:
         if self.cfg.debug:
@@ -212,6 +234,10 @@ class TelegramInboundWorker:
             )
             return
 
+        if not self._try_acquire_poll_lock():
+            print("[telegram-bridge] Poller not started: another local process already holds the poll lock")
+            return
+
         offset = self._load_offset()
 
         if self.cfg.skip_old_updates_on_start and offset is None:
@@ -229,23 +255,94 @@ class TelegramInboundWorker:
             f"lifetime_hours={self.cfg.lifetime_hours} "
             f"default_project={self.cfg.default_project or '<none>'} "
             f"offset_file={self.cfg.offset_file} "
-            f"contexts_file={self.cfg.contexts_file}"
+            f"contexts_file={self.cfg.contexts_file} "
+            f"lock_file={self.cfg.lock_file} "
+            f"auto_delete_webhook_on_conflict={self.cfg.auto_delete_webhook_on_conflict} "
+            f"conflict_backoff_sec={self.cfg.conflict_backoff_sec}"
         )
 
-        while self._running:
-            try:
-                updates = self._get_updates(offset)
-                self._debug(f"getUpdates returned {len(updates)} updates (offset={offset})")
-                for upd in updates:
-                    upd_id = int(upd.get("update_id", 0))
-                    if upd_id:
-                        offset = upd_id + 1
-                        self._save_offset(offset)
-                    self._handle_update(upd)
+        try:
+            while self._running:
+                try:
+                    updates = self._get_updates(offset)
+                    self._debug(f"getUpdates returned {len(updates)} updates (offset={offset})")
+                    for upd in updates:
+                        upd_id = int(upd.get("update_id", 0))
+                        if upd_id:
+                            offset = upd_id + 1
+                            self._save_offset(offset)
+                        self._handle_update(upd)
 
-            except Exception as exc:
-                print(f"[telegram-bridge] polling error: {exc}")
-                time.sleep(max(1, self.cfg.poll_interval_sec))
+                except error.HTTPError as exc:
+                    if exc.code == 409:
+                        self._handle_polling_conflict(exc)
+                    else:
+                        body = exc.read().decode("utf-8", errors="ignore")
+                        print(f"[telegram-bridge] polling HTTP {exc.code}: {body[:500]}")
+                        time.sleep(max(1, self.cfg.poll_interval_sec))
+                except Exception as exc:
+                    print(f"[telegram-bridge] polling error: {exc}")
+                    time.sleep(max(1, self.cfg.poll_interval_sec))
+        finally:
+            self._release_poll_lock()
+
+    def _handle_polling_conflict(self, exc: error.HTTPError) -> None:
+        body = exc.read().decode("utf-8", errors="ignore")
+        print(f"[telegram-bridge] polling conflict (409): {body[:500]}")
+
+        if self.cfg.auto_delete_webhook_on_conflict:
+            try:
+                self._telegram_api("deleteWebhook", {"drop_pending_updates": False})
+                self._debug("deleteWebhook executed after 409 conflict")
+            except Exception as webhook_exc:
+                self._debug(f"deleteWebhook failed after 409 conflict: {webhook_exc}")
+
+        time.sleep(max(1, self.cfg.conflict_backoff_sec))
+
+    def _try_acquire_poll_lock(self) -> bool:
+        if fcntl is None:
+            self._debug("fcntl unavailable; poll lock disabled on this platform")
+            return True
+
+        path = Path(self.cfg.lock_file)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(path, "a+", encoding="utf-8")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as lock_exc:
+                handle.close()
+                if lock_exc.errno in {errno.EACCES, errno.EAGAIN}:
+                    return False
+                self._debug(f"unexpected poll lock error: {lock_exc}")
+                return False
+
+            handle.seek(0)
+            handle.truncate(0)
+            handle.write(str(os.getpid()))
+            handle.flush()
+            self._poll_lock_handle = handle
+            return True
+        except Exception as exc:
+            self._debug(f"unable to create/acquire poll lock {path}: {exc}")
+            return False
+
+    def _release_poll_lock(self) -> None:
+        handle = self._poll_lock_handle
+        self._poll_lock_handle = None
+        if not handle:
+            return
+
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+
+        try:
+            handle.close()
+        except Exception:
+            pass
 
     def _telegram_api(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"https://api.telegram.org/bot{self.cfg.token}/{method}"
