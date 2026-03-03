@@ -15,8 +15,10 @@ Recommended:
 
 from __future__ import annotations
 
+import html as _html
 import json
 import os
+import re
 import threading
 import time
 import errno
@@ -135,6 +137,70 @@ def _resolve_secret(
         if val:
             return val
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Streaming IPC constants
+# ---------------------------------------------------------------------------
+_STREAM_TMP_DIR = "/a0/tmp"
+_STREAM_EDIT_INTERVAL_SEC = 1.5   # minimum seconds between Telegram stream edits
+_STREAM_EDIT_MIN_CHARS_GROWTH = 20  # minimum char growth before triggering an edit
+_STREAM_FILE_MAX_AGE_SEC = 300     # discard stream state files older than 5 minutes
+
+
+def _markdown_to_html(text: str) -> str:
+    """Convert Agent Zero response markdown (subset) to Telegram HTML.
+
+    Processing order:
+    1. Split on triple-backtick code fences → <pre><code>...</code></pre>.
+    2. Split remaining segments on inline code → <code>...</code>.
+    3. HTML-escape the rest and apply bold/italic/link/header patterns.
+    """
+    if not text:
+        return ""
+
+    # Step 1: split on fenced code blocks ```...```
+    fence_parts = re.split(r"(```(?:[^\n]*)\n?[\s\S]*?```)", text)
+    out: list[str] = []
+
+    for fence_part in fence_parts:
+        if fence_part.startswith("```") and fence_part.endswith("```"):
+            inner = fence_part[3:-3]
+            # Strip optional language identifier on the first line
+            inner = re.sub(r"^\w[\w.+-]*\n", "", inner, count=1)
+            out.append(f"<pre><code>{_html.escape(inner.strip())}</code></pre>")
+            continue
+
+        # Step 2: split on inline code `...`
+        inline_parts = re.split(r"(`[^`]+?`)", fence_part)
+        seg_out: list[str] = []
+
+        for seg in inline_parts:
+            if seg.startswith("`") and seg.endswith("`") and len(seg) >= 2:
+                seg_out.append(f"<code>{_html.escape(seg[1:-1])}</code>")
+                continue
+
+            # HTML-escape first (safe for the HTML output context)
+            s = _html.escape(seg)
+
+            # Bold: **text** (standard Markdown)
+            s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s, flags=re.DOTALL)
+            # Bold: *text* (Agent Zero uses single * for bold/emphasis)
+            s = re.sub(r"\*(.+?)\*", r"<b>\1</b>", s)
+            # Italic: _text_ (guard against URL underscores with word-boundary check)
+            s = re.sub(r"(?<![a-zA-Z0-9\-])_([^_\n]+?)_(?![a-zA-Z0-9\-])", r"<i>\1</i>", s)
+            # Strikethrough: ~~text~~
+            s = re.sub(r"~~(.+?)~~", r"<s>\1</s>", s, flags=re.DOTALL)
+            # Links: [text](url)
+            s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', s)
+            # ATX headers: # Heading → <b>Heading</b>
+            s = re.sub(r"^#{1,6}\s+(.+)$", r"<b>\1</b>", s, flags=re.MULTILINE)
+
+            seg_out.append(s)
+
+        out.append("".join(seg_out))
+
+    return "".join(out)
 
 
 class TelegramBridgeConfig:
@@ -496,6 +562,38 @@ class TelegramInboundWorker:
 
         self._forward_to_agent(chat_id, text)
 
+    def _send_chat_action(self, chat_id: str, action: str = "typing") -> None:
+        """Send a chat action (e.g. 'typing') to the given chat."""
+        try:
+            self._telegram_api("sendChatAction", {"chat_id": chat_id, "action": action})
+        except Exception:
+            pass
+
+    def _edit_telegram_message(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        parse_mode: str | None = None,
+    ) -> bool:
+        """Edit an existing Telegram message. Returns True on success."""
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text[:4096],
+            "disable_web_page_preview": True,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        try:
+            self._telegram_api("editMessageText", payload)
+            self._debug(f"editMessageText ok chat_id={chat_id} msg_id={message_id} parse_mode={parse_mode}")
+            return True
+        except Exception as exc:
+            # Telegram returns 400 if message text is identical — not a real error
+            self._debug(f"editMessageText (may be benign): {exc}")
+            return False
+
     def _forward_to_agent(self, chat_id: str, text: str) -> None:
         context_id = self._contexts.get(chat_id)
 
@@ -519,68 +617,152 @@ class TelegramInboundWorker:
             f"text_len={len(text)}"
         )
 
+        # --- streaming setup: placeholder message + stream state file ---
+        placeholder_msg_id: int | None = None
+        stream_file: str | None = None
+
+        try:
+            resp = self._telegram_api("sendMessage", {
+                "chat_id": chat_id,
+                "text": "⏳",
+                "disable_web_page_preview": True,
+            })
+            if isinstance(resp.get("result"), dict):
+                placeholder_msg_id = int(resp["result"].get("message_id", 0)) or None
+        except Exception as exc:
+            self._debug(f"placeholder sendMessage failed: {exc}")
+
+        if placeholder_msg_id:
+            stream_file = f"{_STREAM_TMP_DIR}/tg_stream_{chat_id}.json"
+            try:
+                Path(_STREAM_TMP_DIR).mkdir(parents=True, exist_ok=True)
+                Path(stream_file).write_text(
+                    json.dumps({
+                        "chat_id": chat_id,
+                        "message_id": placeholder_msg_id,
+                        "last_text": "",
+                        "last_edit_ts": 0.0,
+                        "created_ts": time.time(),
+                        "done": False,
+                    }),
+                    encoding="utf-8",
+                )
+                self._debug(f"stream state file created: {stream_file} msg_id={placeholder_msg_id}")
+            except Exception as exc:
+                self._debug(f"stream state write failed: {exc}")
+                stream_file = None
+
+        # Typing keepalive: send 'typing' action every 4s while Agent0 processes
+        typing_stop = threading.Event()
+
+        def _typing_keepalive() -> None:
+            while not typing_stop.wait(4.0):
+                self._send_chat_action(chat_id)
+
+        typing_thread = threading.Thread(
+            target=_typing_keepalive,
+            daemon=True,
+            name="telegram-typing-keepalive",
+        )
+        typing_thread.start()
+
         data = None
         last_connection_error: Exception | None = None
 
-        for url in target_urls:
-            try:
-                req = request.Request(
-                    url=url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-API-KEY": self.cfg.api_key,
-                    },
-                    method="POST",
-                )
+        def _reply_or_edit(reply_text: str, parse_mode: str | None = None) -> None:
+            if placeholder_msg_id:
+                self._edit_telegram_message(chat_id, placeholder_msg_id, reply_text, parse_mode=parse_mode)
+                self._debug(f"final edit sent chat_id={chat_id} msg_id={placeholder_msg_id} text_len={len(reply_text)}")
+            else:
+                self._send_telegram(chat_id, reply_text)
+                self._debug(f"inbound reply sent (no placeholder) chat_id={chat_id} text_len={len(reply_text)}")
 
-                with request.urlopen(req, timeout=180) as resp:
-                    raw = resp.read().decode("utf-8")
-                    data = json.loads(raw) if raw else {}
+        try:
+            for url in target_urls:
+                try:
+                    req = request.Request(
+                        url=url,
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-API-KEY": self.cfg.api_key,
+                        },
+                        method="POST",
+                    )
 
-                self._debug(
-                    f"Agent0 response status=ok url={url} "
-                    f"context_id={data.get('context_id') if isinstance(data, dict) else None} "
-                    f"has_response={bool(isinstance(data, dict) and data.get('response'))}"
-                )
+                    with request.urlopen(req, timeout=180) as resp:
+                        raw = resp.read().decode("utf-8")
+                        data = json.loads(raw) if raw else {}
 
-                new_context_id = data.get("context_id") if isinstance(data, dict) else None
-                if isinstance(new_context_id, str) and new_context_id.strip():
-                    self._contexts[chat_id] = new_context_id.strip()
-                    self._save_contexts()
+                    self._debug(
+                        f"Agent0 response status=ok url={url} "
+                        f"context_id={data.get('context_id') if isinstance(data, dict) else None} "
+                        f"has_response={bool(isinstance(data, dict) and data.get('response'))}"
+                    )
 
-                if self.cfg.reply_via_bridge:
-                    response_text = self._extract_response_text(data)
-                    if response_text:
-                        self._send_telegram(chat_id, response_text)
-                        self._debug(
-                            "inbound reply sent directly from bridge "
-                            f"chat_id={chat_id} text_len={len(response_text)}"
-                        )
-                    else:
-                        self._debug("no response text found in /api_message payload")
-                return
+                    new_context_id = data.get("context_id") if isinstance(data, dict) else None
+                    if isinstance(new_context_id, str) and new_context_id.strip():
+                        self._contexts[chat_id] = new_context_id.strip()
+                        self._save_contexts()
 
-            except error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="ignore")
-                self._debug(f"Agent0 HTTPError url={url} code={exc.code} body={body[:500]!r}")
-                self._send_telegram(chat_id, f"❌ Agent0 HTTP error {exc.code}: {body[:1200]}")
-                return
-            except error.URLError as exc:
-                last_connection_error = exc
-                self._debug(f"Agent0 URLError on {url}: {exc}")
-                continue
-            except Exception as exc:
-                self._debug(f"Agent0 generic error on {url}: {exc}")
-                self._send_telegram(chat_id, f"❌ Error forwarding to Agent0: {exc}")
-                return
+                    if self.cfg.reply_via_bridge:
+                        response_text = self._extract_response_text(data)
+                        if response_text:
+                            # Final message: convert markdown to HTML
+                            formatted = _markdown_to_html(response_text)
+                            _reply_or_edit(formatted, parse_mode="HTML")
+                        else:
+                            self._debug("no response text found in /api_message payload")
+                            if placeholder_msg_id:
+                                try:
+                                    self._telegram_api("deleteMessage", {"chat_id": chat_id, "message_id": placeholder_msg_id})
+                                except Exception:
+                                    pass
+                    return
 
-        details = str(last_connection_error) if last_connection_error else "endpoint unreachable"
-        self._send_telegram(
-            chat_id,
-            "❌ Could not reach Agent0 on any configured endpoint. "
-            f"Check AGENT_ZERO_URL. Details: {details}",
-        )
+                except error.HTTPError as exc:
+                    body = exc.read().decode("utf-8", errors="ignore")
+                    self._debug(f"Agent0 HTTPError url={url} code={exc.code} body={body[:500]!r}")
+                    _reply_or_edit(f"\u274c Agent0 HTTP error {exc.code}: {body[:1200]}")
+                    return
+                except error.URLError as exc:
+                    last_connection_error = exc
+                    self._debug(f"Agent0 URLError on {url}: {exc}")
+                    continue
+                except Exception as exc:
+                    self._debug(f"Agent0 generic error on {url}: {exc}")
+                    _reply_or_edit(f"\u274c Error forwarding to Agent0: {exc}")
+                    return
+
+            details = str(last_connection_error) if last_connection_error else "endpoint unreachable"
+            _reply_or_edit(
+                "\u274c Could not reach Agent0 on any configured endpoint. "
+                f"Check AGENT_ZERO_URL. Details: {details}"
+            )
+
+        finally:
+            typing_stop.set()
+            # Mark stream state as done so the capture extension stops editing
+            if stream_file:
+                try:
+                    sf = Path(stream_file)
+                    if sf.exists():
+                        state = json.loads(sf.read_text(encoding="utf-8"))
+                        state["done"] = True
+                        sf.write_text(json.dumps(state), encoding="utf-8")
+                except Exception:
+                    pass
+                # Schedule stream file cleanup after a short delay
+                _sf = stream_file
+
+                def _cleanup() -> None:
+                    time.sleep(8)
+                    try:
+                        Path(_sf).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_cleanup, daemon=True).start()
 
     def _build_agent_message_urls(self) -> list[str]:
         base_url = self.cfg.api_url.rstrip("/")

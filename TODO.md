@@ -15,6 +15,7 @@
 
 ## Done
 
+- [x] **Owner:** Copilot — **Task:** Streaming typing effect + HTML formatting (v0.2.4): daemon sends ⏳ placeholder + typing keepalive, response_stream edits it token-by-token via file IPC, daemon final-edits with Markdown→HTML. — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Root cause fix: installer now launches bridge as standalone daemon (`TELEGRAM_LAUNCH_DAEMON=true`) so inbound polling starts immediately at boot without waiting for `agent_init` hook. Added `__main__` block to bridge for standalone mode. Bumped to `0.2.3`. — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Added extension version diagnostics (installer + bridge logs) and bumped build to `0.2.2` — **Date:** 2026-03-03
 - [x] **Owner:** Copilot — **Task:** Added multi-hook bootstrap fallback triggers (`response_stream_import`, `message_loop_end_import`) plus bridge module-load diagnostic log — **Date:** 2026-03-03
